@@ -1,0 +1,7 @@
+/bin/
+/collab-board
+/collab-board.exe
+*.test
+*.out
+.idea/
+.vscode/
