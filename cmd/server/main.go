@@ -21,7 +21,7 @@ import (
 var webFS embed.FS
 
 func main() {
-	addr := flag.String("addr", envOr("ADDR", ":8080"), "listen address")
+	addr := flag.String("addr", defaultAddr(), "listen address")
 	flag.Parse()
 
 	log := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
@@ -70,4 +70,17 @@ func envOr(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// defaultAddr resolves the listen address using the conventions of the
+// PaaS we might be deployed on. Precedence: ADDR (explicit) > PORT
+// (Railway/Render/Heroku/Cloud Run inject this) > :8080.
+func defaultAddr() string {
+	if v := os.Getenv("ADDR"); v != "" {
+		return v
+	}
+	if p := os.Getenv("PORT"); p != "" {
+		return ":" + p
+	}
+	return ":8080"
 }
