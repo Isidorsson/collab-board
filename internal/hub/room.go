@@ -20,11 +20,13 @@ type Room struct {
 	join    chan Member
 	leave   chan string
 	inbound chan inboundMsg
+	done    chan struct{}
 	closed  atomic.Bool
 	size    atomic.Int32
 
 	members map[string]Member
 	log     *slog.Logger
+	onEmpty func()
 }
 
 func (r *Room) Size() int { return int(r.size.Load()) }
@@ -35,14 +37,16 @@ type inboundMsg struct {
 	data    []byte
 }
 
-func newRoom(code string, log *slog.Logger) *Room {
+func newRoom(code string, log *slog.Logger, onEmpty func()) *Room {
 	r := &Room{
 		code:    code,
 		join:    make(chan Member, 8),
 		leave:   make(chan string, 8),
 		inbound: make(chan inboundMsg, 256),
+		done:    make(chan struct{}),
 		members: make(map[string]Member),
 		log:     log.With("room", code),
+		onEmpty: onEmpty,
 	}
 	go r.run()
 	return r
@@ -55,26 +59,47 @@ func (r *Room) Join(m Member) {
 		m.Close()
 		return
 	}
-	r.join <- m
+	select {
+	case r.join <- m:
+	case <-r.done:
+		m.Close()
+	}
 }
 
 func (r *Room) Leave(id string) {
 	if r.closed.Load() {
 		return
 	}
-	r.leave <- id
+	select {
+	case r.leave <- id:
+	case <-r.done:
+	}
 }
 
 func (r *Room) Send(from string, t ws.MessageType, data []byte) {
 	if r.closed.Load() {
 		return
 	}
-	r.inbound <- inboundMsg{from: from, msgType: t, data: data}
+	select {
+	case r.inbound <- inboundMsg{from: from, msgType: t, data: data}:
+	case <-r.done:
+	}
+}
+
+// close stops the run loop. Idempotent. Only the Hub should call this,
+// and only after taking the registry lock to prevent a join racing with
+// eviction.
+func (r *Room) close() {
+	if r.closed.CompareAndSwap(false, true) {
+		close(r.done)
+	}
 }
 
 func (r *Room) run() {
 	for {
 		select {
+		case <-r.done:
+			return
 		case m := <-r.join:
 			r.members[m.ID()] = m
 			r.size.Store(int32(len(r.members)))
@@ -86,6 +111,9 @@ func (r *Room) run() {
 				r.size.Store(int32(len(r.members)))
 				r.log.Info("member left", "id", id, "size", len(r.members))
 				r.broadcastPresence()
+				if len(r.members) == 0 && r.onEmpty != nil {
+					r.onEmpty()
+				}
 			}
 		case msg := <-r.inbound:
 			r.fanOut(msg)
@@ -126,6 +154,9 @@ func (r *Room) fanOut(msg inboundMsg) {
 	if len(evicted) > 0 {
 		r.size.Store(int32(len(r.members)))
 		r.broadcastPresence()
+		if len(r.members) == 0 && r.onEmpty != nil {
+			r.onEmpty()
+		}
 	}
 }
 

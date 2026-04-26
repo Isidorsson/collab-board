@@ -65,13 +65,6 @@ func main() {
 	_ = srv.Shutdown(shutdownCtx)
 }
 
-func envOr(key, fallback string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return fallback
-}
-
 // defaultAddr resolves the listen address using the conventions of the
 // PaaS we might be deployed on. Precedence: ADDR (explicit) > PORT
 // (Railway/Render/Heroku/Cloud Run inject this) > :8080.

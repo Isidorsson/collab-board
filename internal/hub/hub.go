@@ -24,9 +24,28 @@ func (h *Hub) GetOrCreate(code string) *Room {
 	if r, ok := h.rooms[code]; ok {
 		return r
 	}
-	r := newRoom(code, h.log)
+	r := newRoom(code, h.log, func() { h.removeIfEmpty(code) })
 	h.rooms[code] = r
 	return r
+}
+
+// removeIfEmpty deletes the room from the registry if it is still empty
+// when the registry lock is acquired. The TOCTOU window matters: a new
+// client may have called GetOrCreate between the room's run-loop seeing
+// an empty member list and this callback running, in which case the
+// room must stay alive.
+func (h *Hub) removeIfEmpty(code string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	r, ok := h.rooms[code]
+	if !ok {
+		return
+	}
+	if r.Size() != 0 {
+		return
+	}
+	r.close()
+	delete(h.rooms, code)
 }
 
 func (h *Hub) Stats() (rooms int, members int) {

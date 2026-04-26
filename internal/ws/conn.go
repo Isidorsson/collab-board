@@ -138,6 +138,9 @@ func (c *Conn) writePump(ctx context.Context) {
 
 func newID() string {
 	var b [8]byte
+	// crypto/rand.Read on Linux/macOS/Windows is documented never to
+	// return an error; if it ever did we'd produce an all-zero ID,
+	// which is harmless for an in-memory presence key.
 	_, _ = rand.Read(b[:])
 	return hex.EncodeToString(b[:])
 }

@@ -1,4 +1,4 @@
-.PHONY: run build test loadtest loadtest-slow docker docker-run lint tidy
+.PHONY: run build fmt test check loadtest loadtest-slow docker docker-run lint tidy
 
 run:
 	go run ./cmd/server
@@ -6,8 +6,14 @@ run:
 build:
 	CGO_ENABLED=0 go build -ldflags="-s -w" -o bin/collab-board ./cmd/server
 
+fmt:
+	go fmt ./...
+
 test:
 	go test -race ./...
+
+# One-shot CI gate: format, vet, and race-tested unit tests.
+check: fmt lint test
 
 loadtest:
 	go run ./cmd/loadtest -n 200 -dur 30s
