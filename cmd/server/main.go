@@ -17,7 +17,7 @@ import (
 	"github.com/Isidorsson/collab-board/internal/hub"
 )
 
-//go:embed all:web
+//go:embed all:web/dist
 var webFS embed.FS
 
 func main() {
@@ -29,7 +29,7 @@ func main() {
 
 	h := hub.New(log)
 
-	web, err := fs.Sub(webFS, "web")
+	web, err := fs.Sub(webFS, "web/dist")
 	if err != nil {
 		log.Error("embed web", "err", err)
 		os.Exit(1)

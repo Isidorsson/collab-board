@@ -12,8 +12,20 @@ const (
 	TypeStroke   MessageType = "stroke"
 	TypeCursor   MessageType = "cursor"
 	TypeChat     MessageType = "chat"
+	TypeClear    MessageType = "clear"
 	TypePresence MessageType = "presence"
+	TypeSnapshot MessageType = "snapshot"
+	TypeRoomMeta MessageType = "room_meta"
 	TypeError    MessageType = "error"
+)
+
+// StrokeMode distinguishes draw and erase strokes on the wire.
+// An empty string is treated as "draw" so older clients keep working.
+type StrokeMode string
+
+const (
+	StrokeModeDraw  StrokeMode = "draw"
+	StrokeModeErase StrokeMode = "erase"
 )
 
 type Envelope struct {
@@ -29,12 +41,13 @@ type JoinPayload struct {
 }
 
 type StrokePayload struct {
-	X1    float64 `json:"x1"`
-	Y1    float64 `json:"y1"`
-	X2    float64 `json:"x2"`
-	Y2    float64 `json:"y2"`
-	Color string  `json:"color"`
-	Width float64 `json:"width"`
+	X1    float64    `json:"x1"`
+	Y1    float64    `json:"y1"`
+	X2    float64    `json:"x2"`
+	Y2    float64    `json:"y2"`
+	Color string     `json:"color"`
+	Width float64    `json:"width"`
+	Mode  StrokeMode `json:"mode,omitempty"`
 }
 
 type CursorPayload struct {
@@ -54,6 +67,22 @@ type PresenceUser struct {
 
 type PresencePayload struct {
 	Users []PresenceUser `json:"users"`
+}
+
+// SnapshotPayload is sent to a member right after they join, so they
+// see the board's current strokes instead of an empty canvas. The
+// history is bounded by Room.maxHistory; it is not a persisted log.
+type SnapshotPayload struct {
+	Strokes []StrokePayload `json:"strokes"`
+}
+
+// RoomMetaPayload exposes room-level facts to the client (room code,
+// when the room was first opened, advisory member capacity). It is
+// sent once on join and never persisted.
+type RoomMetaPayload struct {
+	Code      string `json:"code"`
+	CreatedAt int64  `json:"createdAt"` // unix milliseconds
+	Capacity  int    `json:"capacity"`
 }
 
 type ErrorPayload struct {

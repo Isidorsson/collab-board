@@ -5,3 +5,14 @@
 *.out
 .idea/
 .vscode/
+
+# Frontend build artifacts. The dist directory itself is kept (via .gitkeep)
+# so `//go:embed` succeeds even before the first `make frontend-build`.
+/cmd/server/web/dist/*
+!/cmd/server/web/dist/.gitkeep
+
+# Frontend tooling
+/frontend/node_modules/
+/frontend/dist/
+/frontend/.vite/
+/frontend/.svelte-kit/

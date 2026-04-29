@@ -1,0 +1,148 @@
+<script lang="ts">
+	import { client } from '../lib/client.svelte';
+	import { CanvasController } from '../lib/canvas';
+	import RemoteCursors from './RemoteCursors.svelte';
+	import EmptyState from './EmptyState.svelte';
+
+	let canvasEl: HTMLCanvasElement | null = $state(null);
+	let controller: CanvasController | null = $state(null);
+	let drawing = $state(false);
+	let last: { x: number; y: number } | null = $state(null);
+	let strokeCount = $state(0);
+
+	$effect(() => {
+		if (!canvasEl) return;
+		const c = new CanvasController(canvasEl);
+		controller = c;
+
+		const onResize = () => c.resize();
+		window.addEventListener('resize', onResize);
+
+		client.onStroke = (s) => {
+			c.drawStroke(s);
+			strokeCount = c.strokeCount;
+		};
+		client.onSnapshot = (strokes) => {
+			c.replay(strokes);
+			strokeCount = c.strokeCount;
+		};
+		client.onClear = () => {
+			c.clear();
+			strokeCount = 0;
+		};
+
+		return () => {
+			window.removeEventListener('resize', onResize);
+			client.onStroke = null;
+			client.onSnapshot = null;
+			client.onClear = null;
+			controller = null;
+		};
+	});
+
+	$effect(() => {
+		const onKey = (e: KeyboardEvent) => {
+			const target = e.target as HTMLElement | null;
+			const tag = target?.tagName;
+			if (tag === 'INPUT' || tag === 'TEXTAREA' || target?.isContentEditable) return;
+
+			if (e.key === 'p' || e.key === 'P') {
+				client.tool = 'pen';
+			} else if (e.key === 'e' || e.key === 'E') {
+				client.tool = 'eraser';
+			} else if (/^[1-8]$/.test(e.key)) {
+				const idx = parseInt(e.key, 10) - 1;
+				const color = client.palette[idx];
+				if (color) {
+					client.color = color;
+					client.myColor = color;
+				}
+			}
+		};
+		window.addEventListener('keydown', onKey);
+		return () => window.removeEventListener('keydown', onKey);
+	});
+
+	function localPos(e: PointerEvent): { x: number; y: number } {
+		const el = canvasEl;
+		if (!el) return { x: 0, y: 0 };
+		const r = el.getBoundingClientRect();
+		return { x: e.clientX - r.left, y: e.clientY - r.top };
+	}
+
+	function onPointerDown(e: PointerEvent) {
+		if (!controller) return;
+		// Only act on the primary pointer; ignore right-click / multi-touch.
+		if (e.button !== undefined && e.button !== 0) return;
+		drawing = true;
+		last = localPos(e);
+		canvasEl?.setPointerCapture?.(e.pointerId);
+	}
+
+	function onPointerMove(e: PointerEvent) {
+		if (!controller) return;
+		const p = localPos(e);
+		client.queueCursor(p);
+		if (!drawing || !last) return;
+
+		const stroke = client.makeStroke(
+			last.x,
+			last.y,
+			p.x,
+			p.y,
+			client.tool === 'eraser' ? 'erase' : 'draw'
+		);
+		controller.drawStroke(stroke);
+		strokeCount = controller.strokeCount;
+		client.sendStroke(stroke);
+		last = p;
+	}
+
+	function onPointerUp(e: PointerEvent) {
+		drawing = false;
+		last = null;
+		canvasEl?.releasePointerCapture?.(e.pointerId);
+	}
+</script>
+
+<div class="board" data-tool={client.tool}>
+	<canvas
+		bind:this={canvasEl}
+		class="surface"
+		onpointerdown={onPointerDown}
+		onpointermove={onPointerMove}
+		onpointerup={onPointerUp}
+		onpointercancel={onPointerUp}
+		onpointerleave={onPointerUp}
+	></canvas>
+	<RemoteCursors />
+	<EmptyState hasStrokes={strokeCount > 0} />
+</div>
+
+<style>
+	.board {
+		position: relative;
+		flex: 1;
+		min-height: 0;
+		min-width: 0;
+		overflow: hidden;
+		background: var(--paper);
+	}
+
+	.surface {
+		display: block;
+		width: 100%;
+		height: 100%;
+		touch-action: none;
+		cursor: crosshair;
+		user-select: none;
+		-webkit-user-select: none;
+	}
+
+	.board[data-tool='eraser'] .surface {
+		cursor:
+			url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='20' height='20' viewBox='0 0 20 20'><circle cx='10' cy='10' r='8' fill='none' stroke='%23999' stroke-width='1.5' stroke-dasharray='2 2'/></svg>")
+				10 10,
+			crosshair;
+	}
+</style>

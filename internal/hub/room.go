@@ -1,8 +1,10 @@
 package hub
 
 import (
+	"encoding/json"
 	"log/slog"
 	"sync/atomic"
+	"time"
 
 	"github.com/Isidorsson/collab-board/internal/ws"
 )
@@ -15,8 +17,22 @@ type Member interface {
 	Close()
 }
 
+const (
+	// maxHistorySize bounds per-room stroke memory and the size of the
+	// snapshot sent to late joiners. When exceeded, oldest strokes are
+	// dropped — the board is ephemeral by design, not a persistent log.
+	maxHistorySize = 2000
+
+	// roomCapacity is advisory only. It is reported to clients in
+	// room_meta so the UI can show "X / N in room". The server does
+	// not currently enforce it; doing so would be a separate change.
+	roomCapacity = 50
+)
+
 type Room struct {
-	code    string
+	code      string
+	createdAt time.Time
+
 	join    chan Member
 	leave   chan string
 	inbound chan inboundMsg
@@ -25,6 +41,7 @@ type Room struct {
 	size    atomic.Int32
 
 	members map[string]Member
+	history []ws.StrokePayload
 	log     *slog.Logger
 	onEmpty func()
 }
@@ -39,14 +56,15 @@ type inboundMsg struct {
 
 func newRoom(code string, log *slog.Logger, onEmpty func()) *Room {
 	r := &Room{
-		code:    code,
-		join:    make(chan Member, 8),
-		leave:   make(chan string, 8),
-		inbound: make(chan inboundMsg, 256),
-		done:    make(chan struct{}),
-		members: make(map[string]Member),
-		log:     log.With("room", code),
-		onEmpty: onEmpty,
+		code:      code,
+		createdAt: time.Now(),
+		join:      make(chan Member, 8),
+		leave:     make(chan string, 8),
+		inbound:   make(chan inboundMsg, 256),
+		done:      make(chan struct{}),
+		members:   make(map[string]Member),
+		log:       log.With("room", code),
+		onEmpty:   onEmpty,
 	}
 	go r.run()
 	return r
@@ -104,6 +122,7 @@ func (r *Room) run() {
 			r.members[m.ID()] = m
 			r.size.Store(int32(len(r.members)))
 			r.log.Info("member joined", "id", m.ID(), "name", m.Name(), "size", len(r.members))
+			r.sendInit(m)
 			r.broadcastPresence()
 		case id := <-r.leave:
 			if _, ok := r.members[id]; ok {
@@ -116,9 +135,105 @@ func (r *Room) run() {
 				}
 			}
 		case msg := <-r.inbound:
-			r.fanOut(msg)
+			switch msg.msgType {
+			case ws.TypeStroke:
+				r.recordStroke(msg.data)
+				r.fanOut(msg)
+			case ws.TypeClear:
+				r.history = r.history[:0]
+				r.broadcastClear(msg.from)
+			default:
+				r.fanOut(msg)
+			}
 		}
 	}
+}
+
+// recordStroke appends a stroke to the bounded history. The decode is
+// cheap and lets snapshot encoding emit a typed array instead of a
+// concatenation of pre-marshalled bytes.
+func (r *Room) recordStroke(raw []byte) {
+	var s ws.StrokePayload
+	if err := json.Unmarshal(raw, &s); err != nil {
+		r.log.Debug("stroke decode failed", "err", err)
+		return
+	}
+	if len(r.history) >= maxHistorySize {
+		// Drop the oldest stroke. copy+shrink keeps the backing array
+		// bounded; growing forever via reslicing alone would not.
+		copy(r.history, r.history[1:])
+		r.history = r.history[:len(r.history)-1]
+	}
+	r.history = append(r.history, s)
+}
+
+// sendInit pushes room_meta and (if non-empty) a stroke snapshot to a
+// freshly-joined member. If the member's send buffer is already full
+// on join — which would be highly unusual but possible — we evict for
+// the same reason fanOut does: never let a slow client stall the room.
+func (r *Room) sendInit(m Member) {
+	meta, err := ws.Encode(ws.TypeRoomMeta, "", ws.RoomMetaPayload{
+		Code:      r.code,
+		CreatedAt: r.createdAt.UnixMilli(),
+		Capacity:  roomCapacity,
+	})
+	if err != nil {
+		r.log.Error("encode room_meta", "err", err)
+		return
+	}
+	if !m.TrySend(meta) {
+		r.evictOne(m)
+		return
+	}
+	if len(r.history) == 0 {
+		return
+	}
+	snap, err := ws.Encode(ws.TypeSnapshot, "", ws.SnapshotPayload{Strokes: r.history})
+	if err != nil {
+		r.log.Error("encode snapshot", "err", err)
+		return
+	}
+	if !m.TrySend(snap) {
+		r.evictOne(m)
+	}
+}
+
+// broadcastClear resets every client's canvas. The sender is included
+// — intentional, so a clear from one tab applies across other tabs the
+// same user might have open.
+func (r *Room) broadcastClear(from string) {
+	payload, err := ws.Encode(ws.TypeClear, from, struct{}{})
+	if err != nil {
+		r.log.Error("encode clear", "err", err)
+		return
+	}
+	var evicted []string
+	for id, m := range r.members {
+		if !m.TrySend(payload) {
+			evicted = append(evicted, id)
+		}
+	}
+	for _, id := range evicted {
+		if m, ok := r.members[id]; ok {
+			r.log.Warn("evicting slow client on clear", "id", id)
+			m.Close()
+			delete(r.members, id)
+		}
+	}
+	if len(evicted) > 0 {
+		r.size.Store(int32(len(r.members)))
+		r.broadcastPresence()
+		if len(r.members) == 0 && r.onEmpty != nil {
+			r.onEmpty()
+		}
+	}
+}
+
+func (r *Room) evictOne(m Member) {
+	r.log.Warn("evicting slow client on init", "id", m.ID())
+	m.Close()
+	delete(r.members, m.ID())
+	r.size.Store(int32(len(r.members)))
 }
 
 // fanOut delivers a message to every member except the sender.
