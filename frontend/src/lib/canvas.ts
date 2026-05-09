@@ -55,11 +55,29 @@ export class CanvasController {
 		this.clearRaster();
 	}
 
+	// removeGroup drops every buffered segment whose groupId matches and
+	// repaints from scratch. We cannot "unpaint" pixels selectively
+	// without a full redraw because erase strokes use destination-out
+	// compositing — order and presence both matter for the final raster.
+	removeGroup(groupId: string): boolean {
+		if (!groupId) return false;
+		const next = this.buffer.filter((s) => s.groupId !== groupId);
+		if (next.length === this.buffer.length) return false;
+		this.buffer = next;
+		this.redraw();
+		return true;
+	}
+
+	getGroup(groupId: string): Stroke[] {
+		if (!groupId) return [];
+		return this.buffer.filter((s) => s.groupId === groupId);
+	}
+
 	get strokeCount(): number {
 		return this.buffer.length;
 	}
 
-	private redraw(): void {
+	redraw(): void {
 		this.clearRaster();
 		for (const s of this.buffer) {
 			this.paint(s);

@@ -30,12 +30,20 @@
 			c.clear();
 			strokeCount = 0;
 		};
+		client.onRemoveGroup = (id) => {
+			const removed = c.removeGroup(id);
+			strokeCount = c.strokeCount;
+			return removed;
+		};
+		client.onGetGroup = (id) => c.getGroup(id);
 
 		return () => {
 			window.removeEventListener('resize', onResize);
 			client.onStroke = null;
 			client.onSnapshot = null;
 			client.onClear = null;
+			client.onRemoveGroup = null;
+			client.onGetGroup = null;
 			controller = null;
 		};
 	});
@@ -45,6 +53,22 @@
 			const target = e.target as HTMLElement | null;
 			const tag = target?.tagName;
 			if (tag === 'INPUT' || tag === 'TEXTAREA' || target?.isContentEditable) return;
+
+			// Undo/redo: Ctrl+Z (undo), Ctrl+Y or Ctrl+Shift+Z (redo).
+			// Keep Cmd on macOS too via metaKey. Tested before single-key
+			// shortcuts so plain "z" never collides.
+			const mod = e.ctrlKey || e.metaKey;
+			if (mod && (e.key === 'z' || e.key === 'Z')) {
+				e.preventDefault();
+				if (e.shiftKey) client.redo();
+				else client.undo();
+				return;
+			}
+			if (mod && (e.key === 'y' || e.key === 'Y')) {
+				e.preventDefault();
+				client.redo();
+				return;
+			}
 
 			if (e.key === 'p' || e.key === 'P') {
 				client.tool = 'pen';
@@ -76,6 +100,7 @@
 		if (e.button !== undefined && e.button !== 0) return;
 		drawing = true;
 		last = localPos(e);
+		client.beginStrokeGroup();
 		canvasEl?.setPointerCapture?.(e.pointerId);
 	}
 
@@ -99,6 +124,7 @@
 	}
 
 	function onPointerUp(e: PointerEvent) {
+		if (drawing) client.endStrokeGroup();
 		drawing = false;
 		last = null;
 		canvasEl?.releasePointerCapture?.(e.pointerId);

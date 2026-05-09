@@ -10,6 +10,8 @@
 	let tool = $derived(client.tool);
 	let color = $derived(client.color);
 	let width = $derived(client.width);
+	let canUndo = $derived(client.undoDepth > 0);
+	let canRedo = $derived(client.redoDepth > 0);
 
 	function pickTool(next: Tool) {
 		client.tool = next;
@@ -115,6 +117,65 @@
 				<span class="width-dot" style:width="{w.value * 2}px" style:height="{w.value * 2}px"></span>
 			</button>
 		{/each}
+	</div>
+
+	<span class="divider" aria-hidden="true"></span>
+
+	<div class="group" aria-label="History">
+		<button
+			type="button"
+			class="icon-btn"
+			aria-label="Undo"
+			title="Undo (Ctrl+Z)"
+			disabled={!canUndo}
+			onclick={() => client.undo()}
+		>
+			<svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true">
+				<path
+					d="M7 7L3 11l4 4"
+					fill="none"
+					stroke="currentColor"
+					stroke-width="1.6"
+					stroke-linecap="round"
+					stroke-linejoin="round"
+				/>
+				<path
+					d="M3 11h9a4 4 0 0 1 0 8h-2"
+					fill="none"
+					stroke="currentColor"
+					stroke-width="1.6"
+					stroke-linecap="round"
+					stroke-linejoin="round"
+				/>
+			</svg>
+		</button>
+		<button
+			type="button"
+			class="icon-btn"
+			aria-label="Redo"
+			title="Redo (Ctrl+Y)"
+			disabled={!canRedo}
+			onclick={() => client.redo()}
+		>
+			<svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true">
+				<path
+					d="M13 7l4 4-4 4"
+					fill="none"
+					stroke="currentColor"
+					stroke-width="1.6"
+					stroke-linecap="round"
+					stroke-linejoin="round"
+				/>
+				<path
+					d="M17 11H8a4 4 0 0 0 0 8h2"
+					fill="none"
+					stroke="currentColor"
+					stroke-width="1.6"
+					stroke-linecap="round"
+					stroke-linejoin="round"
+				/>
+			</svg>
+		</button>
 	</div>
 
 	<span class="divider" aria-hidden="true"></span>

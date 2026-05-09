@@ -4,6 +4,7 @@
 export type MessageType =
 	| 'join'
 	| 'stroke'
+	| 'stroke_undo'
 	| 'cursor'
 	| 'chat'
 	| 'clear'
@@ -28,6 +29,11 @@ export interface Stroke {
 	color: string;
 	width: number;
 	mode?: StrokeMode;
+	groupId?: string;
+}
+
+export interface StrokeUndoPayload {
+	groupId: string;
 }
 
 export interface CursorPos {

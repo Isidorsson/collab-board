@@ -177,6 +177,16 @@ textarea {
 	transform: scale(0.96);
 }
 
+.icon-btn:disabled {
+	opacity: 0.4;
+	cursor: not-allowed;
+}
+
+.icon-btn:disabled:hover {
+	background: transparent;
+	color: var(--fg-muted);
+}
+
 .label {
 	color: var(--fg-muted);
 	font-size: 12px;

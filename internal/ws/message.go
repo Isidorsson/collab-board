@@ -8,15 +8,16 @@ import (
 type MessageType string
 
 const (
-	TypeJoin     MessageType = "join"
-	TypeStroke   MessageType = "stroke"
-	TypeCursor   MessageType = "cursor"
-	TypeChat     MessageType = "chat"
-	TypeClear    MessageType = "clear"
-	TypePresence MessageType = "presence"
-	TypeSnapshot MessageType = "snapshot"
-	TypeRoomMeta MessageType = "room_meta"
-	TypeError    MessageType = "error"
+	TypeJoin       MessageType = "join"
+	TypeStroke     MessageType = "stroke"
+	TypeStrokeUndo MessageType = "stroke_undo"
+	TypeCursor     MessageType = "cursor"
+	TypeChat       MessageType = "chat"
+	TypeClear      MessageType = "clear"
+	TypePresence   MessageType = "presence"
+	TypeSnapshot   MessageType = "snapshot"
+	TypeRoomMeta   MessageType = "room_meta"
+	TypeError      MessageType = "error"
 )
 
 // StrokeMode distinguishes draw and erase strokes on the wire.
@@ -41,13 +42,21 @@ type JoinPayload struct {
 }
 
 type StrokePayload struct {
-	X1    float64    `json:"x1"`
-	Y1    float64    `json:"y1"`
-	X2    float64    `json:"x2"`
-	Y2    float64    `json:"y2"`
-	Color string     `json:"color"`
-	Width float64    `json:"width"`
-	Mode  StrokeMode `json:"mode,omitempty"`
+	X1      float64    `json:"x1"`
+	Y1      float64    `json:"y1"`
+	X2      float64    `json:"x2"`
+	Y2      float64    `json:"y2"`
+	Color   string     `json:"color"`
+	Width   float64    `json:"width"`
+	Mode    StrokeMode `json:"mode,omitempty"`
+	GroupID string     `json:"groupId,omitempty"`
+}
+
+// StrokeUndoPayload identifies a stroke group to remove from history.
+// GroupID matches StrokePayload.GroupID; empty IDs are ignored so a
+// malformed undo cannot wipe ungrouped (legacy) strokes.
+type StrokeUndoPayload struct {
+	GroupID string `json:"groupId"`
 }
 
 type CursorPayload struct {

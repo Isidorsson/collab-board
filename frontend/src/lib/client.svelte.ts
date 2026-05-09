@@ -7,7 +7,8 @@ import type {
 	RoomMetaPayload,
 	SnapshotPayload,
 	Stroke,
-	StrokeMode
+	StrokeMode,
+	StrokeUndoPayload
 } from './protocol';
 
 export interface ChatEntry {
@@ -70,6 +71,13 @@ export class CollabClient {
 	color = $state(PALETTE[5]);
 	width = $state(3);
 
+	// Undo/redo are local-history per user: each client tracks its own
+	// stroke groups. Remote users' undo arrives as `stroke_undo` and is
+	// applied to the canvas, but never enters our redo stack — we cannot
+	// redo a stroke we did not draw.
+	undoDepth = $state(0);
+	redoDepth = $state(0);
+
 	// ==== internals ====
 	private ws: WebSocket | null = null;
 	private reconnectTimer: ReturnType<typeof setTimeout> | undefined;
@@ -77,11 +85,16 @@ export class CollabClient {
 	private pendingCursor: CursorPos | null = null;
 	private chatSeq = 0;
 	private chosenRoom = '';
+	private currentGroupId: string | null = null;
+	private undoStack: string[] = [];
+	private redoStack: { groupId: string; strokes: Stroke[] }[] = [];
 
 	// ==== callbacks (registered by the canvas component) ====
 	onStroke: ((stroke: Stroke) => void) | null = null;
 	onSnapshot: ((strokes: Stroke[]) => void) | null = null;
 	onClear: (() => void) | null = null;
+	onRemoveGroup: ((groupId: string) => boolean) | null = null;
+	onGetGroup: ((groupId: string) => Stroke[]) | null = null;
 
 	get palette(): readonly string[] {
 		return PALETTE;
@@ -118,6 +131,55 @@ export class CollabClient {
 		this.send('stroke', stroke);
 	}
 
+	// beginStrokeGroup is called on pointer-down. It mints a fresh
+	// groupId and clears the redo stack — any new drawing invalidates
+	// previously-undone strokes (standard text-editor behavior).
+	beginStrokeGroup(): string {
+		this.currentGroupId = newGroupId();
+		if (this.redoStack.length) {
+			this.redoStack = [];
+			this.redoDepth = 0;
+		}
+		return this.currentGroupId;
+	}
+
+	// endStrokeGroup is called on pointer-up. It pushes the just-drawn
+	// group onto the undo stack so Ctrl+Z can pop it.
+	endStrokeGroup(): void {
+		const id = this.currentGroupId;
+		this.currentGroupId = null;
+		if (!id) return;
+		this.undoStack.push(id);
+		this.undoDepth = this.undoStack.length;
+	}
+
+	undo(): void {
+		const groupId = this.undoStack.pop();
+		this.undoDepth = this.undoStack.length;
+		if (!groupId) return;
+		const strokes = this.onGetGroup?.(groupId) ?? [];
+		if (!strokes.length) return;
+		this.send('stroke_undo', { groupId } satisfies StrokeUndoPayload);
+		this.onRemoveGroup?.(groupId);
+		this.redoStack.push({ groupId, strokes });
+		this.redoDepth = this.redoStack.length;
+	}
+
+	redo(): void {
+		const item = this.redoStack.pop();
+		this.redoDepth = this.redoStack.length;
+		if (!item) return;
+		// Re-emit each segment as a fresh stroke message. Server records
+		// them again (same groupId) and fans them out to peers, so a
+		// future undo of this group still works for everyone.
+		for (const s of item.strokes) {
+			this.onStroke?.(s);
+			this.send('stroke', s);
+		}
+		this.undoStack.push(item.groupId);
+		this.undoDepth = this.undoStack.length;
+	}
+
 	sendChat(text: string): void {
 		const trimmed = text.trim();
 		if (!trimmed) return;
@@ -144,6 +206,14 @@ export class CollabClient {
 
 	clearBoard(): void {
 		this.send('clear', {});
+	}
+
+	private resetUndoRedo(): void {
+		this.currentGroupId = null;
+		this.undoStack = [];
+		this.redoStack = [];
+		this.undoDepth = 0;
+		this.redoDepth = 0;
 	}
 
 	pruneStaleCursors(now: number, ttlMs = 5000): void {
@@ -174,7 +244,8 @@ export class CollabClient {
 			y2,
 			color: this.color,
 			width: this.width,
-			mode
+			mode,
+			groupId: this.currentGroupId ?? undefined
 		};
 	}
 
@@ -233,6 +304,11 @@ export class CollabClient {
 			case 'stroke':
 				this.onStroke?.(env.data as Stroke);
 				break;
+			case 'stroke_undo': {
+				const id = (env.data as StrokeUndoPayload | undefined)?.groupId;
+				if (id) this.onRemoveGroup?.(id);
+				break;
+			}
 			case 'cursor':
 				this.handleCursor(env.from ?? '', env.data as CursorPos);
 				break;
@@ -243,12 +319,17 @@ export class CollabClient {
 				this.members = ((env.data as { users?: PresenceUser[] })?.users ?? []) as PresenceUser[];
 				break;
 			case 'snapshot':
+				// A fresh snapshot means our local stroke history may be stale
+				// (e.g. we just reconnected). Drop the undo/redo stacks since
+				// their group IDs reference strokes we no longer own.
+				this.resetUndoRedo();
 				this.onSnapshot?.(((env.data as SnapshotPayload | undefined)?.strokes ?? []) as Stroke[]);
 				break;
 			case 'room_meta':
 				this.roomMeta = env.data as RoomMetaPayload;
 				break;
 			case 'clear':
+				this.resetUndoRedo();
 				this.onClear?.();
 				break;
 			case 'error':
@@ -297,6 +378,18 @@ export class CollabClient {
 		const list = this.chat.length >= CHAT_HISTORY_CAP ? this.chat.slice(-CHAT_HISTORY_CAP + 1) : this.chat;
 		this.chat = [...list, next];
 	}
+}
+
+function newGroupId(): string {
+	const c = globalThis.crypto;
+	if (c?.randomUUID) return c.randomUUID();
+	const buf = new Uint8Array(16);
+	c?.getRandomValues?.(buf);
+	let out = '';
+	for (let i = 0; i < buf.length; i++) {
+		out += buf[i].toString(16).padStart(2, '0');
+	}
+	return out || `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
 export const client = new CollabClient();

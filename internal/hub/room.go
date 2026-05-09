@@ -139,6 +139,10 @@ func (r *Room) run() {
 			case ws.TypeStroke:
 				r.recordStroke(msg.data)
 				r.fanOut(msg)
+			case ws.TypeStrokeUndo:
+				if r.applyUndo(msg.data) {
+					r.fanOut(msg)
+				}
 			case ws.TypeClear:
 				r.history = r.history[:0]
 				r.broadcastClear(msg.from)
@@ -165,6 +169,33 @@ func (r *Room) recordStroke(raw []byte) {
 		r.history = r.history[:len(r.history)-1]
 	}
 	r.history = append(r.history, s)
+}
+
+// applyUndo removes every stroke matching the payload's GroupID from
+// history. Returns true when at least one stroke was removed — the
+// caller uses that signal to decide whether to fan the undo out. An
+// empty GroupID is rejected so a malformed message cannot wipe legacy
+// (ungrouped) strokes that happen to share an empty ID.
+func (r *Room) applyUndo(raw []byte) bool {
+	var p ws.StrokeUndoPayload
+	if err := json.Unmarshal(raw, &p); err != nil {
+		r.log.Debug("undo decode failed", "err", err)
+		return false
+	}
+	if p.GroupID == "" {
+		return false
+	}
+	kept := r.history[:0]
+	removed := 0
+	for _, s := range r.history {
+		if s.GroupID == p.GroupID {
+			removed++
+			continue
+		}
+		kept = append(kept, s)
+	}
+	r.history = kept
+	return removed > 0
 }
 
 // sendInit pushes room_meta and (if non-empty) a stroke snapshot to a
