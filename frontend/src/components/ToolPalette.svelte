@@ -12,6 +12,7 @@
 	let width = $derived(client.width);
 	let canUndo = $derived(client.undoDepth > 0);
 	let canRedo = $derived(client.redoDepth > 0);
+	let zoom = $derived(Math.round(client.viewport.scale * 100));
 
 	function pickTool(next: Tool) {
 		client.tool = next;
@@ -31,6 +32,14 @@
 			'Clear the board for everyone in this room?\nThis cannot be undone.'
 		);
 		if (ok) client.clearBoard();
+	}
+
+	function zoomCenter(factor: number) {
+		// Pivot at the viewport center so toolbar zoom feels like a "camera"
+		// zoom, not a wheel zoom that drifts toward the cursor location.
+		const w = window.innerWidth;
+		const h = window.innerHeight;
+		client.zoomAt(w / 2, h / 2, factor);
 	}
 </script>
 
@@ -202,6 +211,46 @@
 
 	<span class="divider" aria-hidden="true"></span>
 
+	<div class="group" aria-label="Zoom">
+		<button
+			type="button"
+			class="icon-btn"
+			aria-label="Zoom out"
+			title="Zoom out (Shift+wheel)"
+			onclick={() => zoomCenter(1 / 1.2)}
+		>
+			<svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true">
+				<circle cx="9" cy="9" r="5" fill="none" stroke="currentColor" stroke-width="1.6" />
+				<path d="M6 9h6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+				<path d="M13 13l4 4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+			</svg>
+		</button>
+		<button
+			type="button"
+			class="zoom-label"
+			aria-label="Reset zoom"
+			title="Reset view (0)"
+			onclick={() => client.resetView()}
+		>
+			{zoom}%
+		</button>
+		<button
+			type="button"
+			class="icon-btn"
+			aria-label="Zoom in"
+			title="Zoom in (Shift+wheel)"
+			onclick={() => zoomCenter(1.2)}
+		>
+			<svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true">
+				<circle cx="9" cy="9" r="5" fill="none" stroke="currentColor" stroke-width="1.6" />
+				<path d="M6 9h6M9 6v6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+				<path d="M13 13l4 4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+			</svg>
+		</button>
+	</div>
+
+	<span class="divider" aria-hidden="true"></span>
+
 	<button
 		type="button"
 		class="icon-btn destructive"
@@ -292,6 +341,23 @@
 		display: inline-block;
 		border-radius: 50%;
 		background: currentColor;
+	}
+
+	.zoom-label {
+		min-width: 44px;
+		padding: 4px 6px;
+		font: 11px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+		font-variant-numeric: tabular-nums;
+		color: var(--fg-muted);
+		background: none;
+		border: 0;
+		border-radius: var(--radius-sm);
+		cursor: pointer;
+	}
+
+	.zoom-label:hover {
+		color: var(--fg);
+		background: var(--surface-glass);
 	}
 
 	.destructive {

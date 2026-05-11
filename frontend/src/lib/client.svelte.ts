@@ -37,6 +37,18 @@ export interface LaserPoint {
 	color: string;
 }
 
+// Viewport maps world coordinates to screen pixels:
+//   screen = world * scale + (tx, ty)
+//   world  = (screen - (tx, ty)) / scale
+// Stored on the client so the canvas renderer and the cursor/laser
+// overlays can all transform through the same lens. The wire format
+// is world coords; each peer applies its own viewport on render.
+export interface Viewport {
+	tx: number;
+	ty: number;
+	scale: number;
+}
+
 export type Tool = 'pen' | 'eraser' | 'laser';
 
 const RECONNECT_DELAY_MS = 1500;
@@ -47,6 +59,8 @@ const LASER_TRAIL_CAP = 32;
 const CHAT_HISTORY_CAP = 200;
 const PING_INTERVAL_MS = 2000;
 const RTT_EMA_ALPHA = 0.3;
+const MIN_SCALE = 0.1;
+const MAX_SCALE = 8;
 
 const PALETTE = [
 	'#ef4444',
@@ -104,6 +118,9 @@ export class CollabClient {
 	queueCap = $state(0);
 	evictions = $state(0);
 	hudVisible = $state(false);
+
+	// Local infinite-canvas viewport. Identity = pan(0,0), zoom 1×.
+	viewport = $state<Viewport>({ tx: 0, ty: 0, scale: 1 });
 
 	// ==== internals ====
 	private ws: WebSocket | null = null;
@@ -280,6 +297,34 @@ export class CollabClient {
 
 	clearBoard(): void {
 		this.send('clear', {});
+	}
+
+	// screenToWorld converts a pointer-relative screen position to the
+	// world coordinate the wire protocol expects.
+	screenToWorld(sx: number, sy: number): { x: number; y: number } {
+		const vp = this.viewport;
+		return { x: (sx - vp.tx) / vp.scale, y: (sy - vp.ty) / vp.scale };
+	}
+
+	panBy(dx: number, dy: number): void {
+		const vp = this.viewport;
+		this.viewport = { tx: vp.tx + dx, ty: vp.ty + dy, scale: vp.scale };
+	}
+
+	// zoomAt scales around a fixed screen pivot. Keeping the world point
+	// under the cursor stationary across a zoom is the only thing that
+	// makes wheel-zoom feel natural — without it the camera drifts.
+	zoomAt(sx: number, sy: number, factor: number): void {
+		const vp = this.viewport;
+		const next = clamp(vp.scale * factor, MIN_SCALE, MAX_SCALE);
+		if (next === vp.scale) return;
+		const wx = (sx - vp.tx) / vp.scale;
+		const wy = (sy - vp.ty) / vp.scale;
+		this.viewport = { tx: sx - wx * next, ty: sy - wy * next, scale: next };
+	}
+
+	resetView(): void {
+		this.viewport = { tx: 0, ty: 0, scale: 1 };
 	}
 
 	private resetUndoRedo(): void {
@@ -503,6 +548,10 @@ export class CollabClient {
 		const list = this.chat.length >= CHAT_HISTORY_CAP ? this.chat.slice(-CHAT_HISTORY_CAP + 1) : this.chat;
 		this.chat = [...list, next];
 	}
+}
+
+function clamp(v: number, lo: number, hi: number): number {
+	return v < lo ? lo : v > hi ? hi : v;
 }
 
 function newGroupId(): string {

@@ -17,13 +17,16 @@
 	});
 
 	let cursors = $derived(client.cursors);
+	let vp = $derived(client.viewport);
 </script>
 
 <div class="layer" aria-hidden="true">
 	{#each Array.from(cursors.entries()) as [id, c] (id)}
 		{@const idle = now - c.lastSeen}
 		{@const opacity = idle < 1500 ? 1 : Math.max(0, 1 - (idle - 1500) / 3500)}
-		<div class="cursor" style:left="{c.x}px" style:top="{c.y}px" style:opacity>
+		{@const sx = c.x * vp.scale + vp.tx}
+		{@const sy = c.y * vp.scale + vp.ty}
+		<div class="cursor" style:left="{sx}px" style:top="{sy}px" style:opacity>
 			<svg viewBox="0 0 14 14" width="18" height="18">
 				<path
 					d="M1 1 L1 12 L4 9 L7 13 L9 12 L6 8 L11 8 Z"

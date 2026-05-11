@@ -1,10 +1,13 @@
 import type { Stroke } from './protocol';
+import type { Viewport } from './client.svelte';
 
 /**
  * CanvasController owns the 2D drawing context and a replay buffer so
- * the board survives window resizes (and eventually theme switches)
- * without losing pixels. Strokes are drawn imperatively as they arrive;
- * we keep the same list so we can rebuild the raster on demand.
+ * the board survives window resizes, theme switches, and viewport
+ * changes (pan/zoom) without losing pixels. Strokes are stored in
+ * world coordinates; the controller asks a viewport getter for the
+ * current pan/zoom before each paint so a single source of truth
+ * (CollabClient.viewport) drives canvas, cursors, and laser overlays.
  *
  * Eraser uses destination-out compositing — it removes pixels rather
  * than painting over them. The canvas itself is transparent so the
@@ -15,14 +18,16 @@ export class CanvasController {
 	private ctx: CanvasRenderingContext2D;
 	private dpr = 1;
 	private buffer: Stroke[] = [];
+	private getViewport: () => Viewport;
 
-	constructor(canvas: HTMLCanvasElement) {
+	constructor(canvas: HTMLCanvasElement, viewport: () => Viewport) {
 		this.canvas = canvas;
 		const ctx = canvas.getContext('2d', { alpha: true });
 		if (!ctx) {
 			throw new Error('2D canvas context unavailable');
 		}
 		this.ctx = ctx;
+		this.getViewport = viewport;
 		this.resize();
 	}
 
@@ -33,7 +38,6 @@ export class CanvasController {
 		const h = Math.max(1, Math.round(rect.height));
 		this.canvas.width = w * this.dpr;
 		this.canvas.height = h * this.dpr;
-		this.ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
 		this.redraw();
 	}
 
@@ -44,10 +48,7 @@ export class CanvasController {
 
 	replay(strokes: Stroke[]): void {
 		this.buffer = strokes.slice();
-		this.clearRaster();
-		for (const s of this.buffer) {
-			this.paint(s);
-		}
+		this.redraw();
 	}
 
 	clear(): void {
@@ -85,20 +86,26 @@ export class CanvasController {
 	}
 
 	private clearRaster(): void {
-		const rect = this.canvas.getBoundingClientRect();
-		// Clear in CSS pixels — we are running with a DPR transform applied.
 		this.ctx.save();
 		this.ctx.setTransform(1, 0, 0, 1, 0, 0);
 		this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
 		this.ctx.restore();
-		// Restore the DPR transform we set up in resize().
-		this.ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
-		void rect;
+	}
+
+	// Sets the world->device-pixel transform. DPR sits on the outside so
+	// physical pixel density is honored regardless of viewport zoom; the
+	// viewport's own scale rides on top, which is why a stroke drawn at
+	// width=2 looks thicker at 4× zoom — pen width scales with content.
+	private applyTransform(): void {
+		const vp = this.getViewport();
+		const s = this.dpr * vp.scale;
+		this.ctx.setTransform(s, 0, 0, s, this.dpr * vp.tx, this.dpr * vp.ty);
 	}
 
 	private paint(s: Stroke): void {
 		const erase = s.mode === 'erase';
 		this.ctx.save();
+		this.applyTransform();
 		this.ctx.lineCap = 'round';
 		this.ctx.lineJoin = 'round';
 		this.ctx.lineWidth = Math.max(0.5, s.width || 2);
