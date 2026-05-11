@@ -12,6 +12,7 @@ const (
 	TypeStroke     MessageType = "stroke"
 	TypeStrokeUndo MessageType = "stroke_undo"
 	TypeCursor     MessageType = "cursor"
+	TypeLaser      MessageType = "laser"
 	TypeChat       MessageType = "chat"
 	TypeClear      MessageType = "clear"
 	TypePresence   MessageType = "presence"
@@ -60,6 +61,13 @@ type StrokeUndoPayload struct {
 }
 
 type CursorPayload struct {
+	X float64 `json:"x"`
+	Y float64 `json:"y"`
+}
+
+// LaserPayload is an ephemeral pointer ping. Clients render it as a
+// short-lived fading trail; nothing is recorded server-side.
+type LaserPayload struct {
 	X float64 `json:"x"`
 	Y float64 `json:"y"`
 }

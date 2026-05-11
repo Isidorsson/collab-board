@@ -2,6 +2,7 @@ import type {
 	ChatPayload,
 	CursorPos,
 	Envelope,
+	LaserPos,
 	MessageType,
 	PresenceUser,
 	RoomMetaPayload,
@@ -28,10 +29,20 @@ export interface RemoteCursor {
 	color: string;
 }
 
-export type Tool = 'pen' | 'eraser';
+export interface LaserPoint {
+	x: number;
+	y: number;
+	at: number;
+	color: string;
+}
+
+export type Tool = 'pen' | 'eraser' | 'laser';
 
 const RECONNECT_DELAY_MS = 1500;
 const CURSOR_THROTTLE_MS = 33; // ~30Hz
+const LASER_THROTTLE_MS = 33;
+const LASER_TRAIL_TTL_MS = 1500;
+const LASER_TRAIL_CAP = 32;
 const CHAT_HISTORY_CAP = 200;
 
 const PALETTE = [
@@ -63,6 +74,10 @@ export class CollabClient {
 	members = $state<PresenceUser[]>([]);
 	chat = $state<ChatEntry[]>([]);
 	cursors = $state<Map<string, RemoteCursor>>(new Map());
+	// Per-user trail of recent laser pings. Each user's trail is bounded
+	// in length so a flood cannot grow memory unbounded — the renderer
+	// fades and drops points by age.
+	laserTrails = $state<Map<string, LaserPoint[]>>(new Map());
 
 	myName = $state('');
 	myColor = $state(PALETTE[5]);
@@ -83,6 +98,8 @@ export class CollabClient {
 	private reconnectTimer: ReturnType<typeof setTimeout> | undefined;
 	private cursorTimer: ReturnType<typeof setTimeout> | undefined;
 	private pendingCursor: CursorPos | null = null;
+	private laserTimer: ReturnType<typeof setTimeout> | undefined;
+	private pendingLaser: LaserPos | null = null;
 	private chatSeq = 0;
 	private chosenRoom = '';
 	private currentGroupId: string | null = null;
@@ -204,6 +221,48 @@ export class CollabClient {
 		}, CURSOR_THROTTLE_MS);
 	}
 
+	queueLaser(p: LaserPos): void {
+		// Local echo first — pointer ping feedback must be instant.
+		this.pushLaserPoint('me', p, this.myColor);
+		this.pendingLaser = p;
+		if (this.laserTimer !== undefined) return;
+		this.laserTimer = setTimeout(() => {
+			this.laserTimer = undefined;
+			if (this.pendingLaser) {
+				this.send('laser', this.pendingLaser);
+				this.pendingLaser = null;
+			}
+		}, LASER_THROTTLE_MS);
+	}
+
+	pruneLaserTrails(now: number): void {
+		let mutated = false;
+		for (const [id, trail] of this.laserTrails) {
+			const kept = trail.filter((p) => now - p.at <= LASER_TRAIL_TTL_MS);
+			if (kept.length !== trail.length) {
+				mutated = true;
+				if (kept.length === 0) this.laserTrails.delete(id);
+				else this.laserTrails.set(id, kept);
+			}
+		}
+		if (mutated) {
+			this.laserTrails = new Map(this.laserTrails);
+		}
+	}
+
+	private pushLaserPoint(from: string, p: LaserPos, color: string): void {
+		const now = performance.now();
+		const next = new Map(this.laserTrails);
+		const trail = next.get(from) ?? [];
+		const appended = [...trail, { x: p.x, y: p.y, at: now, color }];
+		const trimmed =
+			appended.length > LASER_TRAIL_CAP
+				? appended.slice(appended.length - LASER_TRAIL_CAP)
+				: appended;
+		next.set(from, trimmed);
+		this.laserTrails = next;
+	}
+
 	clearBoard(): void {
 		this.send('clear', {});
 	}
@@ -312,6 +371,13 @@ export class CollabClient {
 			case 'cursor':
 				this.handleCursor(env.from ?? '', env.data as CursorPos);
 				break;
+			case 'laser': {
+				const from = env.from ?? '';
+				if (!from) break;
+				const member = this.members.find((u) => u.id === from);
+				this.pushLaserPoint(from, env.data as LaserPos, member?.color ?? '#ef4444');
+				break;
+			}
 			case 'chat':
 				this.handleRemoteChat(env.from ?? '', env.data as ChatPayload);
 				break;

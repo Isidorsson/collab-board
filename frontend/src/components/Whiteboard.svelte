@@ -2,11 +2,13 @@
 	import { client } from '../lib/client.svelte';
 	import { CanvasController } from '../lib/canvas';
 	import RemoteCursors from './RemoteCursors.svelte';
+	import LaserTrails from './LaserTrails.svelte';
 	import EmptyState from './EmptyState.svelte';
 
 	let canvasEl: HTMLCanvasElement | null = $state(null);
 	let controller: CanvasController | null = $state(null);
 	let drawing = $state(false);
+	let lasering = $state(false);
 	let last: { x: number; y: number } | null = $state(null);
 	let strokeCount = $state(0);
 
@@ -74,6 +76,8 @@
 				client.tool = 'pen';
 			} else if (e.key === 'e' || e.key === 'E') {
 				client.tool = 'eraser';
+			} else if (e.key === 'l' || e.key === 'L') {
+				client.tool = 'laser';
 			} else if (/^[1-8]$/.test(e.key)) {
 				const idx = parseInt(e.key, 10) - 1;
 				const color = client.palette[idx];
@@ -98,8 +102,16 @@
 		if (!controller) return;
 		// Only act on the primary pointer; ignore right-click / multi-touch.
 		if (e.button !== undefined && e.button !== 0) return;
+		const p = localPos(e);
+		if (client.tool === 'laser') {
+			// Laser is hold-to-ping: no stroke group, no canvas writes.
+			lasering = true;
+			client.queueLaser(p);
+			canvasEl?.setPointerCapture?.(e.pointerId);
+			return;
+		}
 		drawing = true;
-		last = localPos(e);
+		last = p;
 		client.beginStrokeGroup();
 		canvasEl?.setPointerCapture?.(e.pointerId);
 	}
@@ -108,6 +120,10 @@
 		if (!controller) return;
 		const p = localPos(e);
 		client.queueCursor(p);
+		if (lasering) {
+			client.queueLaser(p);
+			return;
+		}
 		if (!drawing || !last) return;
 
 		const stroke = client.makeStroke(
@@ -126,6 +142,7 @@
 	function onPointerUp(e: PointerEvent) {
 		if (drawing) client.endStrokeGroup();
 		drawing = false;
+		lasering = false;
 		last = null;
 		canvasEl?.releasePointerCapture?.(e.pointerId);
 	}
@@ -141,6 +158,7 @@
 		onpointercancel={onPointerUp}
 		onpointerleave={onPointerUp}
 	></canvas>
+	<LaserTrails />
 	<RemoteCursors />
 	<EmptyState hasStrokes={strokeCount > 0} />
 </div>
@@ -169,6 +187,13 @@
 		cursor:
 			url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='20' height='20' viewBox='0 0 20 20'><circle cx='10' cy='10' r='8' fill='none' stroke='%23999' stroke-width='1.5' stroke-dasharray='2 2'/></svg>")
 				10 10,
+			crosshair;
+	}
+
+	.board[data-tool='laser'] .surface {
+		cursor:
+			url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 16 16'><circle cx='8' cy='8' r='4' fill='%23ef4444'/><circle cx='8' cy='8' r='6' fill='none' stroke='%23ef4444' stroke-opacity='0.4' stroke-width='1.5'/></svg>")
+				8 8,
 			crosshair;
 	}
 </style>

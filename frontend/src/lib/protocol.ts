@@ -6,6 +6,7 @@ export type MessageType =
 	| 'stroke'
 	| 'stroke_undo'
 	| 'cursor'
+	| 'laser'
 	| 'chat'
 	| 'clear'
 	| 'presence'
@@ -37,6 +38,11 @@ export interface StrokeUndoPayload {
 }
 
 export interface CursorPos {
+	x: number;
+	y: number;
+}
+
+export interface LaserPos {
 	x: number;
 	y: number;
 }

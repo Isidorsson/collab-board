@@ -82,6 +82,28 @@
 				<path d="M9 9l5 5" fill="none" stroke="currentColor" stroke-width="1.6" />
 			</svg>
 		</button>
+		<button
+			type="button"
+			class="icon-btn"
+			role="radio"
+			aria-checked={tool === 'laser'}
+			aria-label="Laser pointer"
+			title="Laser (L)"
+			onclick={() => pickTool('laser')}
+		>
+			<svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true">
+				<circle cx="10" cy="10" r="3" fill="currentColor" />
+				<circle
+					cx="10"
+					cy="10"
+					r="6"
+					fill="none"
+					stroke="currentColor"
+					stroke-width="1.4"
+					stroke-dasharray="2 2"
+				/>
+			</svg>
+		</button>
 	</div>
 
 	<span class="divider" aria-hidden="true"></span>
