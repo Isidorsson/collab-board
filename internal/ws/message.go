@@ -20,6 +20,7 @@ const (
 	TypeRoomMeta   MessageType = "room_meta"
 	TypePing       MessageType = "ping"
 	TypePong       MessageType = "pong"
+	TypeViewport   MessageType = "viewport"
 	TypeError      MessageType = "error"
 )
 
@@ -102,6 +103,18 @@ type RoomMetaPayload struct {
 	Code      string `json:"code"`
 	CreatedAt int64  `json:"createdAt"` // unix milliseconds
 	Capacity  int    `json:"capacity"`
+}
+
+// ViewportPayload broadcasts a sender's current camera. CX/CY are the
+// world coordinates currently centered on the sender's screen; Scale
+// is their zoom factor. Followers re-derive their own translation so
+// the same world point sits in the center of their viewport regardless
+// of screen size -- transmitting raw tx/ty would not survive a screen
+// size mismatch.
+type ViewportPayload struct {
+	CX    float64 `json:"cx"`
+	CY    float64 `json:"cy"`
+	Scale float64 `json:"scale"`
 }
 
 type ErrorPayload struct {

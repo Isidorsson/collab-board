@@ -7,6 +7,7 @@
 	let members = $derived(client.members);
 	let visible = $derived(members.slice(0, VISIBLE_CAP));
 	let overflow = $derived(Math.max(0, members.length - VISIBLE_CAP));
+	let followingId = $derived(client.followingId);
 
 	function initials(u: PresenceUser): string {
 		const parts = u.name.trim().split(/\s+/).filter(Boolean);
@@ -14,14 +15,27 @@
 		if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
 		return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
 	}
+
+	function toggleFollow(u: PresenceUser) {
+		if (followingId === u.id) client.unfollow();
+		else client.follow(u.id);
+	}
 </script>
 
 <div class="stack" aria-label="People in this room">
 	{#each visible as u (u.id)}
-		<span class="avatar" style:background={u.color} title={u.name}>
+		<button
+			type="button"
+			class="avatar"
+			class:following={followingId === u.id}
+			style:background={u.color}
+			title={followingId === u.id ? `Stop following ${u.name}` : `Follow ${u.name}`}
+			aria-pressed={followingId === u.id}
+			onclick={() => toggleFollow(u)}
+		>
 			<span class="initials">{initials(u)}</span>
 			<span class="name">{u.name}</span>
-		</span>
+		</button>
 	{/each}
 	{#if overflow > 0}
 		<span class="avatar more" title="{overflow} more">+{overflow}</span>
@@ -53,6 +67,7 @@
 		justify-content: center;
 		width: 28px;
 		height: 28px;
+		padding: 0;
 		border-radius: 50%;
 		font-size: 11px;
 		font-weight: 700;
@@ -61,7 +76,9 @@
 		border: 2px solid var(--bg);
 		position: relative;
 		margin-left: -6px;
-		transition: transform 160ms var(--ease-out);
+		cursor: pointer;
+		font-family: inherit;
+		transition: transform 160ms var(--ease-out), box-shadow 160ms var(--ease-out);
 	}
 
 	.avatar:first-child {
@@ -71,6 +88,11 @@
 	.avatar:hover {
 		transform: translateY(-2px);
 		z-index: 2;
+	}
+
+	.avatar.following {
+		box-shadow: 0 0 0 2px var(--fg), 0 0 0 4px var(--bg);
+		z-index: 3;
 	}
 
 	.avatar:hover .name {

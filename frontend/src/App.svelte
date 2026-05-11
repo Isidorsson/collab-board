@@ -9,6 +9,7 @@
 	import ConnectionStatus from './components/ConnectionStatus.svelte';
 	import ThemeToggle from './components/ThemeToggle.svelte';
 	import StatsHud from './components/StatsHud.svelte';
+	import FollowBanner from './components/FollowBanner.svelte';
 
 	$effect(() => {
 		return () => client.disconnect();
@@ -48,6 +49,7 @@
 		<main class="canvas">
 			<Whiteboard />
 			<StatsHud />
+			<FollowBanner />
 		</main>
 
 		<footer class="bottombar">

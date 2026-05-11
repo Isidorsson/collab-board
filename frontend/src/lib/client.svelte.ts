@@ -10,7 +10,8 @@ import type {
 	SnapshotPayload,
 	Stroke,
 	StrokeMode,
-	StrokeUndoPayload
+	StrokeUndoPayload,
+	ViewportShare
 } from './protocol';
 
 export interface ChatEntry {
@@ -61,6 +62,7 @@ const PING_INTERVAL_MS = 2000;
 const RTT_EMA_ALPHA = 0.3;
 const MIN_SCALE = 0.1;
 const MAX_SCALE = 8;
+const VIEWPORT_SHARE_INTERVAL_MS = 80;
 
 const PALETTE = [
 	'#ef4444',
@@ -122,6 +124,12 @@ export class CollabClient {
 	// Local infinite-canvas viewport. Identity = pan(0,0), zoom 1×.
 	viewport = $state<Viewport>({ tx: 0, ty: 0, scale: 1 });
 
+	// Most recently received viewport for each peer. Used to render the
+	// follow-user feature: clicking an avatar locks our viewport onto
+	// theirs every time they pan or zoom.
+	peerViewports = $state<Map<string, ViewportShare>>(new Map());
+	followingId = $state<string | null>(null);
+
 	// ==== internals ====
 	private ws: WebSocket | null = null;
 	private reconnectTimer: ReturnType<typeof setTimeout> | undefined;
@@ -132,6 +140,9 @@ export class CollabClient {
 	private pingTimer: ReturnType<typeof setInterval> | undefined;
 	private pingNonce = 0;
 	private pingSentAt = new Map<number, number>();
+	private viewportShareTimer: ReturnType<typeof setTimeout> | undefined;
+	private viewportShareDirty = false;
+	private suppressBreakFollow = false;
 	private chatSeq = 0;
 	private chosenRoom = '';
 	private currentGroupId: string | null = null;
@@ -307,24 +318,86 @@ export class CollabClient {
 	}
 
 	panBy(dx: number, dy: number): void {
+		this.breakFollowOnUserInput();
 		const vp = this.viewport;
 		this.viewport = { tx: vp.tx + dx, ty: vp.ty + dy, scale: vp.scale };
+		this.markViewportDirty();
 	}
 
 	// zoomAt scales around a fixed screen pivot. Keeping the world point
 	// under the cursor stationary across a zoom is the only thing that
 	// makes wheel-zoom feel natural — without it the camera drifts.
 	zoomAt(sx: number, sy: number, factor: number): void {
+		this.breakFollowOnUserInput();
 		const vp = this.viewport;
 		const next = clamp(vp.scale * factor, MIN_SCALE, MAX_SCALE);
 		if (next === vp.scale) return;
 		const wx = (sx - vp.tx) / vp.scale;
 		const wy = (sy - vp.ty) / vp.scale;
 		this.viewport = { tx: sx - wx * next, ty: sy - wy * next, scale: next };
+		this.markViewportDirty();
 	}
 
 	resetView(): void {
+		this.breakFollowOnUserInput();
 		this.viewport = { tx: 0, ty: 0, scale: 1 };
+		this.markViewportDirty();
+	}
+
+	follow(userId: string): void {
+		this.followingId = userId;
+		const last = this.peerViewports.get(userId);
+		if (last) this.applyRemoteViewport(last);
+	}
+
+	unfollow(): void {
+		this.followingId = null;
+	}
+
+	// reapplyFollow re-centers on the followed peer's last shared viewport.
+	// Called on window resize so the follow stays visually stable when our
+	// screen dimensions change underneath the tx/ty we previously derived.
+	reapplyFollow(): void {
+		if (!this.followingId) return;
+		const last = this.peerViewports.get(this.followingId);
+		if (last) this.applyRemoteViewport(last);
+	}
+
+	// applyRemoteViewport re-centers our own viewport on the remote's
+	// world center at their zoom level. We compute tx/ty from our screen
+	// size — sharing raw tx/ty would not survive a screen-size mismatch.
+	private applyRemoteViewport(vp: ViewportShare): void {
+		const w = window.innerWidth;
+		const h = window.innerHeight;
+		this.suppressBreakFollow = true;
+		this.viewport = {
+			scale: vp.scale,
+			tx: w / 2 - vp.cx * vp.scale,
+			ty: h / 2 - vp.cy * vp.scale
+		};
+		this.suppressBreakFollow = false;
+		this.markViewportDirty();
+	}
+
+	private breakFollowOnUserInput(): void {
+		if (this.suppressBreakFollow) return;
+		this.followingId = null;
+	}
+
+	private markViewportDirty(): void {
+		this.viewportShareDirty = true;
+		if (this.viewportShareTimer !== undefined) return;
+		this.viewportShareTimer = setTimeout(() => {
+			this.viewportShareTimer = undefined;
+			if (!this.viewportShareDirty) return;
+			this.viewportShareDirty = false;
+			const vp = this.viewport;
+			const w = window.innerWidth;
+			const h = window.innerHeight;
+			const cx = (w / 2 - vp.tx) / vp.scale;
+			const cy = (h / 2 - vp.ty) / vp.scale;
+			this.send('viewport', { cx, cy, scale: vp.scale } satisfies ViewportShare);
+		}, VIEWPORT_SHARE_INTERVAL_MS);
 	}
 
 	private resetUndoRedo(): void {
@@ -482,9 +555,25 @@ export class CollabClient {
 			case 'chat':
 				this.handleRemoteChat(env.from ?? '', env.data as ChatPayload);
 				break;
-			case 'presence':
-				this.members = ((env.data as { users?: PresenceUser[] })?.users ?? []) as PresenceUser[];
+			case 'presence': {
+				const users = ((env.data as { users?: PresenceUser[] })?.users ?? []) as PresenceUser[];
+				this.members = users;
+				// Drop follow + cached viewports for anyone who left so the
+				// avatar UI never shows a stale follow target.
+				if (this.followingId && !users.some((u) => u.id === this.followingId)) {
+					this.followingId = null;
+				}
+				const ids = new Set(users.map((u) => u.id));
+				let mutated = false;
+				for (const id of this.peerViewports.keys()) {
+					if (!ids.has(id)) {
+						this.peerViewports.delete(id);
+						mutated = true;
+					}
+				}
+				if (mutated) this.peerViewports = new Map(this.peerViewports);
 				break;
+			}
 			case 'snapshot':
 				// A fresh snapshot means our local stroke history may be stale
 				// (e.g. we just reconnected). Drop the undo/redo stacks since
@@ -498,6 +587,18 @@ export class CollabClient {
 			case 'pong':
 				this.handlePong(env.data as PongPayload);
 				break;
+			case 'viewport': {
+				const from = env.from ?? '';
+				if (!from) break;
+				const vp = env.data as ViewportShare;
+				const next = new Map(this.peerViewports);
+				next.set(from, vp);
+				this.peerViewports = next;
+				if (this.followingId === from) {
+					this.applyRemoteViewport(vp);
+				}
+				break;
+			}
 			case 'clear':
 				this.resetUndoRedo();
 				this.onClear?.();

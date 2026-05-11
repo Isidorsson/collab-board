@@ -19,7 +19,13 @@
 		const c = new CanvasController(canvasEl, () => client.viewport);
 		controller = c;
 
-		const onResize = () => c.resize();
+		const onResize = () => {
+			c.resize();
+			// If we're following someone, our tx/ty was derived from the
+			// previous screen size — re-center on their last shared world
+			// point so the follow stays visually stable across resizes.
+			client.reapplyFollow();
+		};
 		window.addEventListener('resize', onResize);
 
 		client.onStroke = (s) => {

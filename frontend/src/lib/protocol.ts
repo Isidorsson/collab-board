@@ -14,6 +14,7 @@ export type MessageType =
 	| 'room_meta'
 	| 'ping'
 	| 'pong'
+	| 'viewport'
 	| 'error';
 
 export type StrokeMode = 'draw' | 'erase';
@@ -87,4 +88,10 @@ export interface PongPayload {
 	evictions: number;
 	queueDepth: number;
 	queueCap: number;
+}
+
+export interface ViewportShare {
+	cx: number;
+	cy: number;
+	scale: number;
 }
