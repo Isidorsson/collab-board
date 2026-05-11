@@ -40,9 +40,11 @@ func newFakeMember(id string) *fakeMember {
 	return m
 }
 
-func (m *fakeMember) ID() string    { return m.id }
-func (m *fakeMember) Name() string  { return m.name }
-func (m *fakeMember) Color() string { return m.color }
+func (m *fakeMember) ID() string       { return m.id }
+func (m *fakeMember) Name() string     { return m.name }
+func (m *fakeMember) Color() string    { return m.color }
+func (m *fakeMember) BufferDepth() int { return len(m.out) }
+func (m *fakeMember) BufferCap() int   { return cap(m.out) }
 
 func (m *fakeMember) TrySend(payload []byte) bool {
 	if !m.accept.Load() {

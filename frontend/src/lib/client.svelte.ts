@@ -4,6 +4,7 @@ import type {
 	Envelope,
 	LaserPos,
 	MessageType,
+	PongPayload,
 	PresenceUser,
 	RoomMetaPayload,
 	SnapshotPayload,
@@ -44,6 +45,8 @@ const LASER_THROTTLE_MS = 33;
 const LASER_TRAIL_TTL_MS = 1500;
 const LASER_TRAIL_CAP = 32;
 const CHAT_HISTORY_CAP = 200;
+const PING_INTERVAL_MS = 2000;
+const RTT_EMA_ALPHA = 0.3;
 
 const PALETTE = [
 	'#ef4444',
@@ -93,6 +96,15 @@ export class CollabClient {
 	undoDepth = $state(0);
 	redoDepth = $state(0);
 
+	// HUD telemetry. Populated by pong replies; rtt is an EMA over the
+	// last few RTT samples so transient spikes don't make the readout
+	// flicker. Zero values mean "no data yet" — the UI shows "—".
+	rttMs = $state(0);
+	queueDepth = $state(0);
+	queueCap = $state(0);
+	evictions = $state(0);
+	hudVisible = $state(false);
+
 	// ==== internals ====
 	private ws: WebSocket | null = null;
 	private reconnectTimer: ReturnType<typeof setTimeout> | undefined;
@@ -100,6 +112,9 @@ export class CollabClient {
 	private pendingCursor: CursorPos | null = null;
 	private laserTimer: ReturnType<typeof setTimeout> | undefined;
 	private pendingLaser: LaserPos | null = null;
+	private pingTimer: ReturnType<typeof setInterval> | undefined;
+	private pingNonce = 0;
+	private pingSentAt = new Map<number, number>();
 	private chatSeq = 0;
 	private chosenRoom = '';
 	private currentGroupId: string | null = null;
@@ -326,16 +341,57 @@ export class CollabClient {
 		socket.onopen = () => {
 			this.connected = true;
 			this.connecting = false;
+			this.startPing();
 		};
 		socket.onclose = () => {
 			this.connected = false;
 			this.connecting = false;
+			this.stopPing();
 			this.scheduleReconnect();
 		};
 		socket.onerror = () => {
 			socket.close();
 		};
 		socket.onmessage = (ev) => this.handleMessage(ev);
+	}
+
+	private startPing(): void {
+		this.stopPing();
+		const fire = () => {
+			const nonce = ++this.pingNonce;
+			this.pingSentAt.set(nonce, performance.now());
+			// Drop stale entries: anything older than 30s never got a pong.
+			const cutoff = performance.now() - 30000;
+			for (const [k, t] of this.pingSentAt) {
+				if (t < cutoff) this.pingSentAt.delete(k);
+			}
+			this.send('ping', { nonce });
+		};
+		fire();
+		this.pingTimer = setInterval(fire, PING_INTERVAL_MS);
+	}
+
+	private stopPing(): void {
+		if (this.pingTimer !== undefined) {
+			clearInterval(this.pingTimer);
+			this.pingTimer = undefined;
+		}
+		this.pingSentAt.clear();
+	}
+
+	private handlePong(p: PongPayload): void {
+		const sentAt = this.pingSentAt.get(p.nonce);
+		if (sentAt !== undefined) {
+			this.pingSentAt.delete(p.nonce);
+			const sample = performance.now() - sentAt;
+			// EMA smoothing — single noisy spike shouldn't dominate the HUD.
+			this.rttMs = this.rttMs === 0
+				? sample
+				: this.rttMs * (1 - RTT_EMA_ALPHA) + sample * RTT_EMA_ALPHA;
+		}
+		this.queueDepth = p.queueDepth;
+		this.queueCap = p.queueCap;
+		this.evictions = p.evictions;
 	}
 
 	private scheduleReconnect(): void {
@@ -393,6 +449,9 @@ export class CollabClient {
 				break;
 			case 'room_meta':
 				this.roomMeta = env.data as RoomMetaPayload;
+				break;
+			case 'pong':
+				this.handlePong(env.data as PongPayload);
 				break;
 			case 'clear':
 				this.resetUndoRedo();

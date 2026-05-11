@@ -15,6 +15,8 @@ type Member interface {
 	Color() string
 	TrySend(payload []byte) bool
 	Close()
+	BufferDepth() int
+	BufferCap() int
 }
 
 const (
@@ -39,6 +41,11 @@ type Room struct {
 	done    chan struct{}
 	closed  atomic.Bool
 	size    atomic.Int32
+
+	// evictions counts how many slow clients have been booted from this
+	// room since it opened. Exposed via the HUD pong telemetry so the
+	// backpressure design is observable in the UI, not just in logs.
+	evictions atomic.Int64
 
 	members map[string]Member
 	history []ws.StrokePayload
@@ -146,6 +153,8 @@ func (r *Room) run() {
 			case ws.TypeClear:
 				r.history = r.history[:0]
 				r.broadcastClear(msg.from)
+			case ws.TypePing:
+				r.handlePing(msg)
 			default:
 				r.fanOut(msg)
 			}
@@ -249,6 +258,7 @@ func (r *Room) broadcastClear(from string) {
 			r.log.Warn("evicting slow client on clear", "id", id)
 			m.Close()
 			delete(r.members, id)
+			r.evictions.Add(1)
 		}
 	}
 	if len(evicted) > 0 {
@@ -265,6 +275,36 @@ func (r *Room) evictOne(m Member) {
 	m.Close()
 	delete(r.members, m.ID())
 	r.size.Store(int32(len(r.members)))
+	r.evictions.Add(1)
+}
+
+// handlePing replies to the sender alone with a pong that carries the
+// echoed nonce and a snapshot of room telemetry. Stats are piggy-backed
+// on pong (rather than fired as a separate broadcast) so the client HUD
+// updates at exactly the ping cadence with one round trip.
+func (r *Room) handlePing(msg inboundMsg) {
+	var p ws.PingPayload
+	if err := json.Unmarshal(msg.data, &p); err != nil {
+		return
+	}
+	m, ok := r.members[msg.from]
+	if !ok {
+		return
+	}
+	payload, err := ws.Encode(ws.TypePong, "", ws.PongPayload{
+		Nonce:      p.Nonce,
+		Members:    len(r.members),
+		Evictions:  r.evictions.Load(),
+		QueueDepth: m.BufferDepth(),
+		QueueCap:   m.BufferCap(),
+	})
+	if err != nil {
+		r.log.Error("encode pong", "err", err)
+		return
+	}
+	if !m.TrySend(payload) {
+		r.evictOne(m)
+	}
 }
 
 // fanOut delivers a message to every member except the sender.
@@ -295,6 +335,7 @@ func (r *Room) fanOut(msg inboundMsg) {
 			r.log.Warn("evicting slow client", "id", id)
 			m.Close()
 			delete(r.members, id)
+			r.evictions.Add(1)
 		}
 	}
 	if len(evicted) > 0 {
@@ -326,6 +367,7 @@ func (r *Room) broadcastPresence() {
 	}
 	for _, id := range evicted {
 		delete(r.members, id)
+		r.evictions.Add(1)
 	}
 	if len(evicted) > 0 {
 		r.size.Store(int32(len(r.members)))

@@ -8,9 +8,25 @@
 	import ShareButton from './components/ShareButton.svelte';
 	import ConnectionStatus from './components/ConnectionStatus.svelte';
 	import ThemeToggle from './components/ThemeToggle.svelte';
+	import StatsHud from './components/StatsHud.svelte';
 
 	$effect(() => {
 		return () => client.disconnect();
+	});
+
+	$effect(() => {
+		const onKey = (e: KeyboardEvent) => {
+			const target = e.target as HTMLElement | null;
+			const tag = target?.tagName;
+			if (tag === 'INPUT' || tag === 'TEXTAREA' || target?.isContentEditable) return;
+			// Backtick toggles the live network HUD. Visible only when joined.
+			if (e.key === '`' && client.roomCode) {
+				e.preventDefault();
+				client.hudVisible = !client.hudVisible;
+			}
+		};
+		window.addEventListener('keydown', onKey);
+		return () => window.removeEventListener('keydown', onKey);
 	});
 
 	let joined = $derived(client.roomCode !== '');
@@ -31,6 +47,7 @@
 
 		<main class="canvas">
 			<Whiteboard />
+			<StatsHud />
 		</main>
 
 		<footer class="bottombar">

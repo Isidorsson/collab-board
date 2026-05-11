@@ -3,21 +3,36 @@
 
 	let connected = $derived(client.connected);
 	let connecting = $derived(client.connecting);
+	let rtt = $derived(client.rttMs);
+	let hudOn = $derived(client.hudVisible);
 
 	let label = $derived(connected ? 'live' : connecting ? 'connecting' : 'offline');
 	let mood = $derived(connected ? 'ok' : connecting ? 'warn' : 'err');
+	let rttLabel = $derived(connected && rtt > 0 ? `${Math.round(rtt)}ms` : '');
+
+	function toggle() {
+		if (!client.roomCode) return;
+		client.hudVisible = !client.hudVisible;
+	}
 </script>
 
-<div
+<button
+	type="button"
 	class="status"
-	role="status"
 	aria-live="polite"
+	aria-pressed={hudOn}
+	aria-label="Connection: {label}{rttLabel ? `, round trip ${rttLabel}` : ''}. Click to toggle network HUD."
+	title="Toggle network HUD (`)"
 	data-mood={mood}
 	data-prominent={!connected}
+	onclick={toggle}
 >
 	<span class="dot" aria-hidden="true"></span>
 	<span class="text">{label}</span>
-</div>
+	{#if rttLabel}
+		<span class="rtt">{rttLabel}</span>
+	{/if}
+</button>
 
 <style>
 	.status {
@@ -30,6 +45,8 @@
 		border: 1px solid var(--border);
 		font-size: 12px;
 		color: var(--fg-muted);
+		font-family: inherit;
+		cursor: pointer;
 		-webkit-backdrop-filter: blur(10px);
 		backdrop-filter: blur(10px);
 		transition:
@@ -38,12 +55,30 @@
 			border-color 200ms var(--ease-out);
 	}
 
+	.status:hover {
+		color: var(--fg);
+		border-color: var(--border-strong);
+	}
+
+	.status[aria-pressed='true'] {
+		color: var(--fg);
+		border-color: var(--border-strong);
+	}
+
 	.dot {
 		width: 7px;
 		height: 7px;
 		border-radius: 50%;
 		background: var(--fg-faint);
 		box-shadow: 0 0 0 0 currentColor;
+	}
+
+	.rtt {
+		font-variant-numeric: tabular-nums;
+		font-size: 11px;
+		opacity: 0.75;
+		padding-left: 4px;
+		border-left: 1px solid var(--border);
 	}
 
 	.status[data-mood='ok'] .dot {

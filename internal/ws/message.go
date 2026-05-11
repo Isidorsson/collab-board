@@ -18,6 +18,8 @@ const (
 	TypePresence   MessageType = "presence"
 	TypeSnapshot   MessageType = "snapshot"
 	TypeRoomMeta   MessageType = "room_meta"
+	TypePing       MessageType = "ping"
+	TypePong       MessageType = "pong"
 	TypeError      MessageType = "error"
 )
 
@@ -104,6 +106,25 @@ type RoomMetaPayload struct {
 
 type ErrorPayload struct {
 	Message string `json:"message"`
+}
+
+// PingPayload is the client-originated half of an application-level
+// heartbeat. The server echoes the nonce back in PongPayload so the
+// client can measure round-trip latency end-to-end (not just at the
+// TCP/WS layer, which the websocket library hides).
+type PingPayload struct {
+	Nonce int64 `json:"nonce"`
+}
+
+// PongPayload carries the echoed nonce plus a small slice of room-side
+// telemetry. We piggy-back stats on pong rather than firing a separate
+// stats broadcast so the HUD updates at exactly the ping cadence.
+type PongPayload struct {
+	Nonce      int64 `json:"nonce"`
+	Members    int   `json:"members"`
+	Evictions  int64 `json:"evictions"`
+	QueueDepth int   `json:"queueDepth"`
+	QueueCap   int   `json:"queueCap"`
 }
 
 func Encode(t MessageType, from string, data any) ([]byte, error) {

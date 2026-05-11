@@ -53,6 +53,12 @@ func (c *Conn) ID() string    { return c.id }
 func (c *Conn) Name() string  { return c.name }
 func (c *Conn) Color() string { return c.color }
 
+// BufferDepth and BufferCap expose the outbound send-channel state for
+// telemetry. Reads are best-effort (a snapshot from another goroutine),
+// which is fine for a HUD — the value is advisory, not load-bearing.
+func (c *Conn) BufferDepth() int { return len(c.send) }
+func (c *Conn) BufferCap() int   { return cap(c.send) }
+
 func (c *Conn) TrySend(payload []byte) bool {
 	select {
 	case <-c.closed:
@@ -99,7 +105,7 @@ func (c *Conn) readPump(ctx context.Context, room RoomBus) {
 			continue
 		}
 		switch env.Type {
-		case TypeStroke, TypeStrokeUndo, TypeCursor, TypeLaser, TypeChat, TypeClear:
+		case TypeStroke, TypeStrokeUndo, TypeCursor, TypeLaser, TypeChat, TypeClear, TypePing:
 			room.Send(c.id, env.Type, env.Data)
 		default:
 			// Ignore unknown types silently — keeps protocol forward-compatible.

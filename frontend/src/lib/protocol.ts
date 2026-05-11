@@ -12,6 +12,8 @@ export type MessageType =
 	| 'presence'
 	| 'snapshot'
 	| 'room_meta'
+	| 'ping'
+	| 'pong'
 	| 'error';
 
 export type StrokeMode = 'draw' | 'erase';
@@ -73,4 +75,16 @@ export interface RoomMetaPayload {
 
 export interface ErrorPayload {
 	message: string;
+}
+
+export interface PingPayload {
+	nonce: number;
+}
+
+export interface PongPayload {
+	nonce: number;
+	members: number;
+	evictions: number;
+	queueDepth: number;
+	queueCap: number;
 }
