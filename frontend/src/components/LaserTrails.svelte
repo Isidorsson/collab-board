@@ -19,7 +19,6 @@
 	});
 
 	let trails = $derived(client.laserTrails);
-	let vp = $derived(client.viewport);
 </script>
 
 <div class="layer" aria-hidden="true">
@@ -27,12 +26,11 @@
 		{#each points as p, i (i)}
 			{@const age = now - p.at}
 			{@const t = Math.max(0, 1 - age / TRAIL_TTL_MS)}
-			{@const sx = p.x * vp.scale + vp.tx}
-			{@const sy = p.y * vp.scale + vp.ty}
+			{@const s = client.worldToScreen(p.x, p.y)}
 			<div
 				class="dot"
-				style:left="{sx}px"
-				style:top="{sy}px"
+				style:left="{s.x}px"
+				style:top="{s.y}px"
 				style:opacity={t * 0.9}
 				style:background={p.color}
 				style:--scale={0.4 + t * 0.6}

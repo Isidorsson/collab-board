@@ -1,3 +1,4 @@
+import { SvelteMap } from 'svelte/reactivity';
 import type {
 	ChatPayload,
 	CursorPos,
@@ -11,6 +12,8 @@ import type {
 	Stroke,
 	StrokeMode,
 	StrokeUndoPayload,
+	TextBox,
+	TextDeletePayload,
 	ViewportShare
 } from './protocol';
 
@@ -50,7 +53,7 @@ export interface Viewport {
 	scale: number;
 }
 
-export type Tool = 'pen' | 'eraser' | 'laser';
+export type Tool = 'pen' | 'eraser' | 'laser' | 'text';
 
 const RECONNECT_DELAY_MS = 1500;
 const CURSOR_THROTTLE_MS = 33; // ~30Hz
@@ -63,6 +66,8 @@ const RTT_EMA_ALPHA = 0.3;
 const MIN_SCALE = 0.1;
 const MAX_SCALE = 8;
 const VIEWPORT_SHARE_INTERVAL_MS = 80;
+const TEXT_SEND_INTERVAL_MS = 120;
+const TEXT_TYPING_TTL_MS = 1800;
 
 const PALETTE = [
 	'#ef4444',
@@ -91,6 +96,7 @@ export class CollabClient {
 	roomCode = $state('');
 	roomMeta = $state<RoomMetaPayload | null>(null);
 	members = $state<PresenceUser[]>([]);
+	memberById = $derived(new Map(this.members.map((m) => [m.id, m])));
 	chat = $state<ChatEntry[]>([]);
 	cursors = $state<Map<string, RemoteCursor>>(new Map());
 	// Per-user trail of recent laser pings. Each user's trail is bounded
@@ -130,6 +136,13 @@ export class CollabClient {
 	peerViewports = $state<Map<string, ViewportShare>>(new Map());
 	followingId = $state<string | null>(null);
 
+	// SvelteMap (not $state<Map>) so per-key set/delete fires reactivity
+	// without rebuilding the whole map.
+	texts = new SvelteMap<string, TextBox>();
+	textOwners = new SvelteMap<string, string>();
+	textActivity = new SvelteMap<string, number>();
+	editingTextId = $state<string | null>(null);
+
 	// ==== internals ====
 	private ws: WebSocket | null = null;
 	private reconnectTimer: ReturnType<typeof setTimeout> | undefined;
@@ -143,11 +156,14 @@ export class CollabClient {
 	private viewportShareTimer: ReturnType<typeof setTimeout> | undefined;
 	private viewportShareDirty = false;
 	private suppressBreakFollow = false;
+	// Per-id timers so two boxes being edited at once don't starve each other.
+	private textSendTimers = new Map<string, ReturnType<typeof setTimeout>>();
+	private textPending = new Map<string, TextBox>();
 	private chatSeq = 0;
 	private chosenRoom = '';
 	private currentGroupId: string | null = null;
 	private undoStack: string[] = [];
-	private redoStack: { groupId: string; strokes: Stroke[] }[] = [];
+	private redoStack: { groupId: string; strokes: Stroke[]; texts: TextBox[] }[] = [];
 
 	// ==== callbacks (registered by the canvas component) ====
 	onStroke: ((stroke: Stroke) => void) | null = null;
@@ -218,10 +234,15 @@ export class CollabClient {
 		this.undoDepth = this.undoStack.length;
 		if (!groupId) return;
 		const strokes = this.onGetGroup?.(groupId) ?? [];
-		if (!strokes.length) return;
+		const texts: TextBox[] = [];
+		for (const t of this.texts.values()) {
+			if (t.groupId === groupId) texts.push(t);
+		}
+		if (strokes.length === 0 && texts.length === 0) return;
 		this.send('stroke_undo', { groupId } satisfies StrokeUndoPayload);
 		this.onRemoveGroup?.(groupId);
-		this.redoStack.push({ groupId, strokes });
+		for (const t of texts) this.forgetText(t.id);
+		this.redoStack.push({ groupId, strokes, texts });
 		this.redoDepth = this.redoStack.length;
 	}
 
@@ -235,6 +256,11 @@ export class CollabClient {
 		for (const s of item.strokes) {
 			this.onStroke?.(s);
 			this.send('stroke', s);
+		}
+		for (const t of item.texts) {
+			this.texts.set(t.id, t);
+			this.textOwners.set(t.id, 'me');
+			this.send('text', t);
 		}
 		this.undoStack.push(item.groupId);
 		this.undoDepth = this.undoStack.length;
@@ -278,6 +304,36 @@ export class CollabClient {
 		}, LASER_THROTTLE_MS);
 	}
 
+	// A '?' owner (loaded from snapshot, unknown origin) is treated as
+	// not-ours so we don't hijack someone else's edits after a reconnect.
+	isTextOwnedByMe(id: string): boolean {
+		return this.textOwners.get(id) === 'me';
+	}
+
+	isTextRecentlyActive(id: string, now: number): boolean {
+		const last = this.textActivity.get(id);
+		return last !== undefined && now - last < TEXT_TYPING_TTL_MS;
+	}
+
+	hasRecentTextActivity(now: number): boolean {
+		for (const at of this.textActivity.values()) {
+			if (now - at < TEXT_TYPING_TTL_MS) return true;
+		}
+		return false;
+	}
+
+	pruneTextActivity(now: number): void {
+		for (const [id, at] of this.textActivity) {
+			if (now - at >= TEXT_TYPING_TTL_MS) this.textActivity.delete(id);
+		}
+	}
+
+	textTypistName(id: string): string {
+		const owner = this.textOwners.get(id);
+		if (!owner || owner === 'me' || owner === '?') return '';
+		return this.memberById.get(owner)?.name ?? '';
+	}
+
 	pruneLaserTrails(now: number): void {
 		let mutated = false;
 		for (const [id, trail] of this.laserTrails) {
@@ -310,11 +366,118 @@ export class CollabClient {
 		this.send('clear', {});
 	}
 
-	// screenToWorld converts a pointer-relative screen position to the
-	// world coordinate the wire protocol expects.
+	// The empty initial box isn't broadcast — first updateText publishes it,
+	// so a click-then-click-away leaves no trace on peers.
+	createText(x: number, y: number): void {
+		const id = newGroupId();
+		const groupId = newGroupId();
+		const box: TextBox = {
+			id,
+			x,
+			y,
+			text: '',
+			color: this.color,
+			size: widthToFontSize(this.width),
+			groupId
+		};
+		this.texts.set(id, box);
+		this.textOwners.set(id, 'me');
+		this.editingTextId = id;
+		this.redoStack = [];
+		this.redoDepth = 0;
+		this.undoStack.push(groupId);
+		this.undoDepth = this.undoStack.length;
+	}
+
+	updateText(id: string, text: string): void {
+		const existing = this.texts.get(id);
+		if (!existing) return;
+		const updated: TextBox = { ...existing, text };
+		this.texts.set(id, updated);
+		this.queueTextSend(updated);
+	}
+
+	moveText(id: string, x: number, y: number): void {
+		const existing = this.texts.get(id);
+		if (!existing) return;
+		const updated: TextBox = { ...existing, x, y };
+		this.texts.set(id, updated);
+		this.queueTextSend(updated);
+	}
+
+	commitText(id: string): void {
+		const box = this.texts.get(id);
+		if (!box) return;
+		if (this.editingTextId === id) this.editingTextId = null;
+		// If the user committed without typing anything, drop the box
+		// rather than persisting an empty placeholder.
+		if (!box.text.trim()) {
+			this.discardEmptyText(id);
+			return;
+		}
+		this.flushTextSend(id);
+	}
+
+	private forgetText(id: string): void {
+		this.texts.delete(id);
+		this.textOwners.delete(id);
+		this.textActivity.delete(id);
+		this.cancelTextSend(id);
+		if (this.editingTextId === id) this.editingTextId = null;
+	}
+
+	// Server applyTextDelete returns false for unknown ids, so a fire-and-forget
+	// delete here is a safe no-op even if no broadcast ever published this box.
+	private discardEmptyText(id: string): void {
+		const box = this.texts.get(id);
+		if (!box) return;
+		this.send('text_delete', { id } satisfies TextDeletePayload);
+		if (box.groupId && this.undoStack[this.undoStack.length - 1] === box.groupId) {
+			this.undoStack.pop();
+			this.undoDepth = this.undoStack.length;
+		}
+		this.forgetText(id);
+	}
+
+	private queueTextSend(box: TextBox): void {
+		this.textPending.set(box.id, box);
+		if (this.textSendTimers.has(box.id)) return;
+		const t = setTimeout(() => {
+			this.textSendTimers.delete(box.id);
+			this.flushTextSend(box.id);
+		}, TEXT_SEND_INTERVAL_MS);
+		this.textSendTimers.set(box.id, t);
+	}
+
+	private flushTextSend(id: string): void {
+		const pending = this.textPending.get(id);
+		const t = this.textSendTimers.get(id);
+		if (t !== undefined) {
+			clearTimeout(t);
+			this.textSendTimers.delete(id);
+		}
+		if (!pending) return;
+		this.textPending.delete(id);
+		this.send('text', pending);
+	}
+
+	private cancelTextSend(id: string): void {
+		const t = this.textSendTimers.get(id);
+		if (t !== undefined) {
+			clearTimeout(t);
+			this.textSendTimers.delete(id);
+		}
+		this.textPending.delete(id);
+	}
+
 	screenToWorld(sx: number, sy: number): { x: number; y: number } {
 		const vp = this.viewport;
 		return { x: (sx - vp.tx) / vp.scale, y: (sy - vp.ty) / vp.scale };
+	}
+
+	worldToScreen(wx: number, wy: number): { x: number; y: number } {
+		const vp = this.viewport;
+		return { x: wx * vp.scale + vp.tx, y: wy * vp.scale + vp.ty };
 	}
 
 	panBy(dx: number, dy: number): void {
@@ -552,6 +715,24 @@ export class CollabClient {
 				this.pushLaserPoint(from, env.data as LaserPos, member?.color ?? '#ef4444');
 				break;
 			}
+			case 'text': {
+				const from = env.from ?? '';
+				const box = env.data as TextBox;
+				if (!box?.id) break;
+				this.texts.set(box.id, box);
+				// First sender wins ownership. Once recorded the owner is
+				// stable so a stray "me" client-side flag cannot override.
+				if (!this.textOwners.has(box.id)) {
+					this.textOwners.set(box.id, from || 'me');
+				}
+				this.textActivity.set(box.id, performance.now());
+				break;
+			}
+			case 'text_delete': {
+				const id = (env.data as TextDeletePayload | undefined)?.id;
+				if (id) this.forgetText(id);
+				break;
+			}
 			case 'chat':
 				this.handleRemoteChat(env.from ?? '', env.data as ChatPayload);
 				break;
@@ -574,13 +755,26 @@ export class CollabClient {
 				if (mutated) this.peerViewports = new Map(this.peerViewports);
 				break;
 			}
-			case 'snapshot':
-				// A fresh snapshot means our local stroke history may be stale
+			case 'snapshot': {
+				// A fresh snapshot means our local history may be stale
 				// (e.g. we just reconnected). Drop the undo/redo stacks since
-				// their group IDs reference strokes we no longer own.
+				// their group IDs reference items we no longer own.
 				this.resetUndoRedo();
-				this.onSnapshot?.(((env.data as SnapshotPayload | undefined)?.strokes ?? []) as Stroke[]);
+				const snap = env.data as SnapshotPayload | undefined;
+				this.onSnapshot?.((snap?.strokes ?? []) as Stroke[]);
+				this.texts.clear();
+				this.textOwners.clear();
+				this.textActivity.clear();
+				for (const t of snap?.texts ?? []) {
+					this.texts.set(t.id, t);
+					// Ownership for snapshot texts is unknown to us — the
+					// server doesn't track who created which box. Treat them
+					// as foreign-owned (read-only) until proven otherwise.
+					this.textOwners.set(t.id, '?');
+				}
+				this.editingTextId = null;
 				break;
+			}
 			case 'room_meta':
 				this.roomMeta = env.data as RoomMetaPayload;
 				break;
@@ -601,6 +795,11 @@ export class CollabClient {
 			}
 			case 'clear':
 				this.resetUndoRedo();
+				this.texts.clear();
+				this.textOwners.clear();
+				this.textActivity.clear();
+				this.editingTextId = null;
+				for (const id of Array.from(this.textSendTimers.keys())) this.cancelTextSend(id);
 				this.onClear?.();
 				break;
 			case 'error':
@@ -653,6 +852,16 @@ export class CollabClient {
 
 function clamp(v: number, lo: number, hi: number): number {
 	return v < lo ? lo : v > hi ? hi : v;
+}
+
+// widthToFontSize maps the existing pen-width slider onto a sensible
+// font-size range so the text tool reuses the width control without a
+// new UI knob. Floor of 12 keeps body text legible at low zoom.
+function widthToFontSize(width: number): number {
+	if (width <= 2) return 14;
+	if (width <= 4) return 18;
+	if (width <= 6) return 22;
+	return 28;
 }
 
 function newGroupId(): string {

@@ -25,6 +25,11 @@ const (
 	// dropped — the board is ephemeral by design, not a persistent log.
 	maxHistorySize = 2000
 
+	// maxTextCount bounds per-room text-box memory. Updates to an
+	// existing box replace in place; only new IDs grow the count, so
+	// this cap really limits distinct boxes, not edits.
+	maxTextCount = 500
+
 	// roomCapacity is advisory only. It is reported to clients in
 	// room_meta so the UI can show "X / N in room". The server does
 	// not currently enforce it; doing so would be a separate change.
@@ -49,8 +54,12 @@ type Room struct {
 
 	members map[string]Member
 	history []ws.StrokePayload
-	log     *slog.Logger
-	onEmpty func()
+	// Insertion-ordered so snapshots replay in the order boxes appeared;
+	// textIndex maps id -> position for O(1) update.
+	texts     []ws.TextPayload
+	textIndex map[string]int
+	log       *slog.Logger
+	onEmpty   func()
 }
 
 func (r *Room) Size() int { return int(r.size.Load()) }
@@ -70,6 +79,7 @@ func newRoom(code string, log *slog.Logger, onEmpty func()) *Room {
 		inbound:   make(chan inboundMsg, 256),
 		done:      make(chan struct{}),
 		members:   make(map[string]Member),
+		textIndex: make(map[string]int),
 		log:       log.With("room", code),
 		onEmpty:   onEmpty,
 	}
@@ -150,8 +160,17 @@ func (r *Room) run() {
 				if r.applyUndo(msg.data) {
 					r.fanOut(msg)
 				}
+			case ws.TypeText:
+				r.recordText(msg.data)
+				r.fanOut(msg)
+			case ws.TypeTextDelete:
+				if r.applyTextDelete(msg.data) {
+					r.fanOut(msg)
+				}
 			case ws.TypeClear:
 				r.history = r.history[:0]
+				r.texts = r.texts[:0]
+				r.textIndex = make(map[string]int)
 				r.broadcastClear(msg.from)
 			case ws.TypePing:
 				r.handlePing(msg)
@@ -180,11 +199,12 @@ func (r *Room) recordStroke(raw []byte) {
 	r.history = append(r.history, s)
 }
 
-// applyUndo removes every stroke matching the payload's GroupID from
-// history. Returns true when at least one stroke was removed — the
-// caller uses that signal to decide whether to fan the undo out. An
-// empty GroupID is rejected so a malformed message cannot wipe legacy
-// (ungrouped) strokes that happen to share an empty ID.
+// applyUndo removes every stroke and text box matching the payload's
+// GroupID from history. Returns true when at least one item was
+// removed — the caller uses that signal to decide whether to fan the
+// undo out. An empty GroupID is rejected so a malformed message
+// cannot wipe legacy (ungrouped) items that happen to share an empty
+// ID.
 func (r *Room) applyUndo(raw []byte) bool {
 	var p ws.StrokeUndoPayload
 	if err := json.Unmarshal(raw, &p); err != nil {
@@ -204,7 +224,73 @@ func (r *Room) applyUndo(raw []byte) bool {
 		kept = append(kept, s)
 	}
 	r.history = kept
+
+	// Undo also evicts any text box stamped with the same group.
+	if len(r.texts) > 0 {
+		keptTexts := r.texts[:0]
+		for _, t := range r.texts {
+			if t.GroupID == p.GroupID {
+				removed++
+				continue
+			}
+			keptTexts = append(keptTexts, t)
+		}
+		if len(keptTexts) != len(r.texts) {
+			r.texts = keptTexts
+			r.rebuildTextIndex()
+		}
+	}
 	return removed > 0
+}
+
+// Bound is on distinct IDs (not edits), so typing into one box for an
+// hour doesn't fill the buffer.
+func (r *Room) recordText(raw []byte) {
+	var t ws.TextPayload
+	if err := json.Unmarshal(raw, &t); err != nil {
+		r.log.Debug("text decode failed", "err", err)
+		return
+	}
+	if t.ID == "" {
+		return
+	}
+	if idx, ok := r.textIndex[t.ID]; ok {
+		r.texts[idx] = t
+		return
+	}
+	if len(r.texts) >= maxTextCount {
+		oldest := r.texts[0]
+		delete(r.textIndex, oldest.ID)
+		copy(r.texts, r.texts[1:])
+		r.texts = r.texts[:len(r.texts)-1]
+		r.rebuildTextIndex()
+	}
+	r.textIndex[t.ID] = len(r.texts)
+	r.texts = append(r.texts, t)
+}
+
+func (r *Room) applyTextDelete(raw []byte) bool {
+	var p ws.TextDeletePayload
+	if err := json.Unmarshal(raw, &p); err != nil {
+		return false
+	}
+	if p.ID == "" {
+		return false
+	}
+	idx, ok := r.textIndex[p.ID]
+	if !ok {
+		return false
+	}
+	r.texts = append(r.texts[:idx], r.texts[idx+1:]...)
+	r.rebuildTextIndex()
+	return true
+}
+
+func (r *Room) rebuildTextIndex() {
+	r.textIndex = make(map[string]int, len(r.texts))
+	for i, t := range r.texts {
+		r.textIndex[t.ID] = i
+	}
 }
 
 // sendInit pushes room_meta and (if non-empty) a stroke snapshot to a
@@ -225,10 +311,13 @@ func (r *Room) sendInit(m Member) {
 		r.evictOne(m)
 		return
 	}
-	if len(r.history) == 0 {
+	if len(r.history) == 0 && len(r.texts) == 0 {
 		return
 	}
-	snap, err := ws.Encode(ws.TypeSnapshot, "", ws.SnapshotPayload{Strokes: r.history})
+	snap, err := ws.Encode(ws.TypeSnapshot, "", ws.SnapshotPayload{
+		Strokes: r.history,
+		Texts:   r.texts,
+	})
 	if err != nil {
 		r.log.Error("encode snapshot", "err", err)
 		return

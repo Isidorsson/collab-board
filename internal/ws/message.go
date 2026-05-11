@@ -13,6 +13,8 @@ const (
 	TypeStrokeUndo MessageType = "stroke_undo"
 	TypeCursor     MessageType = "cursor"
 	TypeLaser      MessageType = "laser"
+	TypeText       MessageType = "text"
+	TypeTextDelete MessageType = "text_delete"
 	TypeChat       MessageType = "chat"
 	TypeClear      MessageType = "clear"
 	TypePresence   MessageType = "presence"
@@ -90,10 +92,32 @@ type PresencePayload struct {
 }
 
 // SnapshotPayload is sent to a member right after they join, so they
-// see the board's current strokes instead of an empty canvas. The
-// history is bounded by Room.maxHistory; it is not a persisted log.
+// see the board's current strokes and text boxes instead of an empty
+// canvas. Both lists are bounded; nothing is persisted.
 type SnapshotPayload struct {
 	Strokes []StrokePayload `json:"strokes"`
+	Texts   []TextPayload   `json:"texts"`
+}
+
+// TextPayload represents a single text box on the board. ID is a
+// client-minted UUID so updates can be addressed without a server
+// round trip. GroupID lets a text participate in the same undo system
+// as strokes -- a Ctrl+Z that targets a group will remove the text.
+type TextPayload struct {
+	ID      string  `json:"id"`
+	X       float64 `json:"x"`
+	Y       float64 `json:"y"`
+	Text    string  `json:"text"`
+	Color   string  `json:"color"`
+	Size    float64 `json:"size"`
+	GroupID string  `json:"groupId,omitempty"`
+}
+
+// TextDeletePayload removes a text box by ID. Used by the owner on
+// explicit delete; the undo path uses StrokeUndoPayload with the same
+// GroupID since one group can span strokes and texts.
+type TextDeletePayload struct {
+	ID string `json:"id"`
 }
 
 // RoomMetaPayload exposes room-level facts to the client (room code,

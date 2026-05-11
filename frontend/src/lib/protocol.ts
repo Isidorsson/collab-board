@@ -7,6 +7,8 @@ export type MessageType =
 	| 'stroke_undo'
 	| 'cursor'
 	| 'laser'
+	| 'text'
+	| 'text_delete'
 	| 'chat'
 	| 'clear'
 	| 'presence'
@@ -64,8 +66,23 @@ export interface PresencePayload {
 	users: PresenceUser[];
 }
 
+export interface TextBox {
+	id: string;
+	x: number;
+	y: number;
+	text: string;
+	color: string;
+	size: number;
+	groupId?: string;
+}
+
+export interface TextDeletePayload {
+	id: string;
+}
+
 export interface SnapshotPayload {
 	strokes: Stroke[];
+	texts?: TextBox[];
 }
 
 export interface RoomMetaPayload {

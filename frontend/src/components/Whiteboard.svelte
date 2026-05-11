@@ -3,6 +3,7 @@
 	import { CanvasController } from '../lib/canvas';
 	import RemoteCursors from './RemoteCursors.svelte';
 	import LaserTrails from './LaserTrails.svelte';
+	import TextLayer from './TextLayer.svelte';
 	import EmptyState from './EmptyState.svelte';
 
 	let canvasEl: HTMLCanvasElement | null = $state(null);
@@ -92,6 +93,8 @@
 				client.tool = 'eraser';
 			} else if (e.key === 'l' || e.key === 'L') {
 				client.tool = 'laser';
+			} else if (e.key === 't' || e.key === 'T') {
+				client.tool = 'text';
 			} else if (e.key === '0') {
 				client.resetView();
 			} else if (/^[1-8]$/.test(e.key)) {
@@ -131,6 +134,10 @@
 			lasering = true;
 			client.queueLaser(wp);
 			canvasEl?.setPointerCapture?.(e.pointerId);
+			return;
+		}
+		if (client.tool === 'text') {
+			client.createText(wp.x, wp.y);
 			return;
 		}
 		drawing = true;
@@ -230,6 +237,7 @@
 		onpointerleave={onPointerUp}
 		onwheel={onWheel}
 	></canvas>
+	<TextLayer />
 	<LaserTrails />
 	<RemoteCursors />
 	<EmptyState hasStrokes={strokeCount > 0} />
@@ -260,6 +268,10 @@
 			url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='20' height='20' viewBox='0 0 20 20'><circle cx='10' cy='10' r='8' fill='none' stroke='%23999' stroke-width='1.5' stroke-dasharray='2 2'/></svg>")
 				10 10,
 			crosshair;
+	}
+
+	.board[data-tool='text'] .surface {
+		cursor: text;
 	}
 
 	.board[data-tool='laser'] .surface {

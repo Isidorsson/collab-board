@@ -113,6 +113,25 @@
 				/>
 			</svg>
 		</button>
+		<button
+			type="button"
+			class="icon-btn"
+			role="radio"
+			aria-checked={tool === 'text'}
+			aria-label="Text"
+			title="Text (T)"
+			onclick={() => pickTool('text')}
+		>
+			<svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true">
+				<path
+					d="M4 5h12M10 5v11M7.5 16h5"
+					fill="none"
+					stroke="currentColor"
+					stroke-width="1.6"
+					stroke-linecap="round"
+				/>
+			</svg>
+		</button>
 	</div>
 
 	<span class="divider" aria-hidden="true"></span>

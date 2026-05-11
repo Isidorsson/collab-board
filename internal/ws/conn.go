@@ -105,7 +105,7 @@ func (c *Conn) readPump(ctx context.Context, room RoomBus) {
 			continue
 		}
 		switch env.Type {
-		case TypeStroke, TypeStrokeUndo, TypeCursor, TypeLaser, TypeViewport, TypeChat, TypeClear, TypePing:
+		case TypeStroke, TypeStrokeUndo, TypeCursor, TypeLaser, TypeViewport, TypeText, TypeTextDelete, TypeChat, TypeClear, TypePing:
 			room.Send(c.id, env.Type, env.Data)
 		default:
 			// Ignore unknown types silently — keeps protocol forward-compatible.
